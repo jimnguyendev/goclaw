@@ -19,8 +19,9 @@ interface SummoningModalProps {
 }
 
 const SUMMONING_FILES = [
-  { name: "SOUL.md", label: "Soul & Personality" },
-  { name: "IDENTITY.md", label: "Identity Card" },
+  { name: "SOUL.md", label: "Soul & Personality", required: true },
+  { name: "IDENTITY.md", label: "Identity Card", required: true },
+  { name: "USER_PREDEFINED.md", label: "Default User Context", required: false },
 ];
 
 export function SummoningModal({
@@ -58,7 +59,9 @@ export function SummoningModal({
         );
       }
       if (data.type === "completed") {
-        setGeneratedFiles(SUMMONING_FILES.map((f) => f.name));
+        // Mark required files as done (safety net); optional files only if actually generated
+        const required = SUMMONING_FILES.filter((f) => f.required).map((f) => f.name);
+        setGeneratedFiles((prev) => [...new Set([...prev, ...required])]);
         setStatus("completed");
         onCompleted();
       }

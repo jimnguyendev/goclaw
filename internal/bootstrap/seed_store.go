@@ -63,6 +63,18 @@ func SeedToStore(ctx context.Context, agentStore store.AgentStore, agentID uuid.
 		seeded = append(seeded, name)
 	}
 
+	// Seed USER_PREDEFINED.md for predefined agents (agent-level, not in templateFiles).
+	// Provides baseline user-handling rules shared across all users.
+	if !hasContent[UserPredefinedFile] {
+		content, err := templateFS.ReadFile(filepath.Join("templates", UserPredefinedFile))
+		if err == nil {
+			if err := agentStore.SetAgentContextFile(ctx, agentID, UserPredefinedFile, string(content)); err != nil {
+				return seeded, err
+			}
+			seeded = append(seeded, UserPredefinedFile)
+		}
+	}
+
 	if len(seeded) > 0 {
 		slog.Info("seeded agent context files to store", "agent", agentID, "files", seeded)
 	}

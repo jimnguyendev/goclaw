@@ -37,3 +37,4 @@ deploy-*.sh
 
 docs/technical-diaries
 plans
+release-manifest.json

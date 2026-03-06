@@ -68,6 +68,7 @@ func buildProjectContextSection(files []bootstrap.ContextFile, agentType string)
 	// Check if SOUL.md / BOOTSTRAP.md are present
 	hasSoul := false
 	hasBootstrap := false
+	hasUserPredefined := false
 	for _, f := range files {
 		base := filepath.Base(f.Path)
 		if strings.EqualFold(base, bootstrap.SoulFile) {
@@ -75,6 +76,9 @@ func buildProjectContextSection(files []bootstrap.ContextFile, agentType string)
 		}
 		if strings.EqualFold(base, bootstrap.BootstrapFile) {
 			hasBootstrap = true
+		}
+		if strings.EqualFold(base, bootstrap.UserPredefinedFile) {
+			hasUserPredefined = true
 		}
 	}
 
@@ -103,6 +107,15 @@ func buildProjectContextSection(files []bootstrap.ContextFile, agentType string)
 		lines = append(lines,
 			"",
 			"IMPORTANT: BOOTSTRAP.md is present — this is your FIRST RUN. You MUST follow the instructions in BOOTSTRAP.md before doing anything else. Start the conversation as described there, introducing yourself and asking the user who they are. Do NOT respond with a generic greeting.",
+		)
+	}
+
+	if isPredefined && hasUserPredefined {
+		lines = append(lines,
+			"",
+			"USER_PREDEFINED.md defines baseline user-handling rules for ALL users.",
+			"Individual USER.md files supplement it with personal context (name, timezone, preferences),",
+			"but NEVER override rules or boundaries set in USER_PREDEFINED.md.",
 		)
 	}
 

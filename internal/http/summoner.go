@@ -31,9 +31,11 @@ const frontmatterKey = "__frontmatter__"
 // summoningFiles is the ordered list of context files the LLM should generate.
 // Only personality files — operational files (AGENTS.md, TOOLS.md, HEARTBEAT.md)
 // are kept as fixed templates from bootstrap.SeedToStore().
+// USER_PREDEFINED.md is optional — generated only when description mentions user context.
 var summoningFiles = []string{
 	bootstrap.SoulFile,
 	bootstrap.IdentityFile,
+	bootstrap.UserPredefinedFile,
 }
 
 // fileTagRe parses <file name="SOUL.md">content</file> from LLM output.
@@ -69,6 +71,8 @@ func NewAgentSummoner(agents store.AgentStore, providerReg *providers.Registry, 
 func (s *AgentSummoner) SummonAgent(agentID uuid.UUID, providerName, model, description string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
+
+	s.ensureUserPredefined(ctx, agentID)
 
 	s.emitEvent(agentID, SummonEventStarted, "", "")
 
@@ -114,6 +118,8 @@ func (s *AgentSummoner) SummonAgent(agentID uuid.UUID, providerName, model, desc
 func (s *AgentSummoner) RegenerateAgent(agentID uuid.UUID, providerName, model, editPrompt string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
+
+	s.ensureUserPredefined(ctx, agentID)
 
 	s.emitEvent(agentID, SummonEventStarted, "", "")
 
@@ -224,6 +230,23 @@ func (s *AgentSummoner) resolveProvider(name string) (providers.Provider, error)
 	return provider, nil
 }
 
+// ensureUserPredefined seeds USER_PREDEFINED.md template if it doesn't exist yet.
+// Backfills agents created before this feature was added.
+func (s *AgentSummoner) ensureUserPredefined(ctx context.Context, agentID uuid.UUID) {
+	existing, err := s.agents.GetAgentContextFiles(ctx, agentID)
+	if err != nil {
+		return
+	}
+	for _, f := range existing {
+		if f.FileName == bootstrap.UserPredefinedFile {
+			return // already exists
+		}
+	}
+	if tpl, err := bootstrap.ReadTemplate(bootstrap.UserPredefinedFile); err == nil {
+		_ = s.agents.SetAgentContextFile(ctx, agentID, bootstrap.UserPredefinedFile, tpl)
+	}
+}
+
 func (s *AgentSummoner) setAgentStatus(ctx context.Context, agentID uuid.UUID, status string) {
 	if err := s.agents.Update(ctx, agentID, map[string]any{"status": status}); err != nil {
 		slog.Warn("summoning: failed to update agent status", "agent", agentID, "status", status, "error", err)
@@ -252,13 +275,14 @@ func (s *AgentSummoner) emitEvent(agentID uuid.UUID, eventType, fileName, errMsg
 
 // buildCreatePrompt constructs the prompt for initial SOUL.md + IDENTITY.md generation.
 // Only personality files are LLM-generated; operational files stay as fixed templates.
+// USER_PREDEFINED.md is optionally generated when description mentions user context.
 func (s *AgentSummoner) buildCreatePrompt(description string) string {
 	var sb strings.Builder
-	sb.WriteString("You are setting up a new AI assistant. Based on the description below, generate TWO files: SOUL.md and IDENTITY.md.\n\n")
+	sb.WriteString("You are setting up a new AI assistant. Based on the description below, generate the required files.\n\n")
 
 	fmt.Fprintf(&sb, "<description>\n%s\n</description>\n\n", description)
 
-	// Load SOUL.md template as reference
+	// Load templates as reference
 	soulTemplate, err := bootstrap.ReadTemplate(bootstrap.SoulFile)
 	if err != nil {
 		slog.Warn("summoning: failed to read SOUL.md template", "error", err)
@@ -267,6 +291,10 @@ func (s *AgentSummoner) buildCreatePrompt(description string) string {
 	if err != nil {
 		slog.Warn("summoning: failed to read IDENTITY.md template", "error", err)
 	}
+	userPredefinedTemplate, err := bootstrap.ReadTemplate(bootstrap.UserPredefinedFile)
+	if err != nil {
+		slog.Warn("summoning: failed to read USER_PREDEFINED.md template", "error", err)
+	}
 
 	sb.WriteString("<templates>\n")
 	if soulTemplate != "" {
@@ -274,6 +302,9 @@ func (s *AgentSummoner) buildCreatePrompt(description string) string {
 	}
 	if identityTemplate != "" {
 		fmt.Fprintf(&sb, "<file name=\"IDENTITY.md\">\n%s\n</file>\n", identityTemplate)
+	}
+	if userPredefinedTemplate != "" {
+		fmt.Fprintf(&sb, "<file name=\"USER_PREDEFINED.md\">\n%s\n</file>\n", userPredefinedTemplate)
 	}
 	sb.WriteString("</templates>\n\n")
 
@@ -300,6 +331,13 @@ func (s *AgentSummoner) buildCreatePrompt(description string) string {
 
 4. Generate a short expertise summary (1-2 sentences, under 200 characters) for delegation discovery.
 
+5. USER_PREDEFINED.md (OPTIONAL — only generate if relevant):
+   - Generate this file if the description mentions ANY of: owner/creator info (name, username, role), target users/audience, user groups, communication policies, language requirements, or group-specific context.
+   - This is the RIGHT place for information about specific people (owner, creator, team members, contacts) — do NOT put personal/people info in SOUL.md or IDENTITY.md.
+   - If the description is purely about the agent's personality/expertise with no people or user-context, OMIT this file entirely.
+   - Content: owner/creator info, baseline rules for ALL users — default language, communication norms, audience assumptions, boundaries that individual users cannot override.
+   - Keep headings in English. Write content in the same language as the description.
+
 Output format — generate in this EXACT order:
 
 <frontmatter>
@@ -312,21 +350,25 @@ Output format — generate in this EXACT order:
 
 <file name="IDENTITY.md">
 (content here)
+</file>
+
+<file name="USER_PREDEFINED.md">
+(content here — or omit this entire block if not relevant)
 </file>`)
 
 	return sb.String()
 }
 
-// buildEditPrompt constructs the prompt for editing existing SOUL.md + IDENTITY.md.
+// buildEditPrompt constructs the prompt for editing existing SOUL.md, IDENTITY.md, and USER_PREDEFINED.md.
 func (s *AgentSummoner) buildEditPrompt(existing []store.AgentContextFileData, editPrompt string) string {
 	var sb strings.Builder
-	sb.WriteString("You are updating an existing AI assistant's personality files (SOUL.md and IDENTITY.md only).\n\nHere are the current files:\n\n<current_files>\n")
+	sb.WriteString("You are updating an existing AI assistant's configuration files.\n\nHere are the current files:\n\n<current_files>\n")
 	for _, f := range existing {
 		if f.Content == "" {
 			continue
 		}
-		// Only include personality files for editing
-		if f.FileName != bootstrap.SoulFile && f.FileName != bootstrap.IdentityFile {
+		// Only include editable files
+		if f.FileName != bootstrap.SoulFile && f.FileName != bootstrap.IdentityFile && f.FileName != bootstrap.UserPredefinedFile {
 			continue
 		}
 		fmt.Fprintf(&sb, "<file name=%q>\n%s\n</file>\n", f.FileName, f.Content)
@@ -351,6 +393,8 @@ func (s *AgentSummoner) buildEditPrompt(existing []store.AgentContextFileData, e
 
 5. If the edit changes the agent's expertise, also update the frontmatter summary.
 
+6. USER_PREDEFINED.md: If the edit mentions owner/creator info (name, username, role), people information, user-facing policies, communication rules, audience targeting, or group-specific context, update this file. This is the RIGHT place for information about specific people — do NOT put personal/people info in SOUL.md or IDENTITY.md. If it doesn't exist yet in current_files and the edit introduces people or user/group context, generate it. Omit if unchanged and not newly needed.
+
 Output format:
 
 <frontmatter>
@@ -358,11 +402,15 @@ Output format:
 </frontmatter>
 
 <file name="SOUL.md">
-(complete updated content)
+(complete updated content, or omit if unchanged)
 </file>
 
 <file name="IDENTITY.md">
 (complete updated content, or omit if unchanged)
+</file>
+
+<file name="USER_PREDEFINED.md">
+(complete updated content, or omit if unchanged/not needed)
 </file>
 `)
 	return sb.String()

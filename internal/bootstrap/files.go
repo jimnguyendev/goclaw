@@ -21,13 +21,14 @@ import (
 
 // Bootstrap filenames (matching TS workspace.ts constants).
 const (
-	AgentsFile    = "AGENTS.md"
-	SoulFile      = "SOUL.md"
-	ToolsFile     = "TOOLS.md"
-	IdentityFile  = "IDENTITY.md"
-	UserFile      = "USER.md"
-	HeartbeatFile = "HEARTBEAT.md"
-	BootstrapFile = "BOOTSTRAP.md"
+	AgentsFile         = "AGENTS.md"
+	SoulFile           = "SOUL.md"
+	ToolsFile          = "TOOLS.md"
+	IdentityFile       = "IDENTITY.md"
+	UserFile           = "USER.md"
+	UserPredefinedFile = "USER_PREDEFINED.md"
+	HeartbeatFile      = "HEARTBEAT.md"
+	BootstrapFile      = "BOOTSTRAP.md"
 	DelegationFile   = "DELEGATION.md"
 	TeamFile         = "TEAM.md"
 	AvailabilityFile = "AVAILABILITY.md"

@@ -181,9 +181,9 @@ export function AgentFilesTab({
             </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            This will regenerate <strong>SOUL.md</strong> and <strong>IDENTITY.md</strong> from
-            scratch using the original description. Any manual edits to these files will be
-            overwritten.
+            This will regenerate <strong>SOUL.md</strong>, <strong>IDENTITY.md</strong>, and
+            optionally <strong>USER_PREDEFINED.md</strong> from scratch using the original
+            description. Any manual edits to these files will be overwritten.
           </p>
           <DialogFooter>
             <Button

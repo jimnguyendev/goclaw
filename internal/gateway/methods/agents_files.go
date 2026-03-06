@@ -17,7 +17,7 @@ import (
 // TOOLS.md and HEARTBEAT.md excluded — only useful in standalone mode.
 var allowedAgentFiles = []string{
 	bootstrap.AgentsFile, bootstrap.SoulFile, bootstrap.IdentityFile,
-	bootstrap.UserFile, bootstrap.BootstrapFile, bootstrap.MemoryJSONFile,
+	bootstrap.UserFile, bootstrap.UserPredefinedFile, bootstrap.BootstrapFile, bootstrap.MemoryJSONFile,
 }
 
 // --- agents.files.list ---
