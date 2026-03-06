@@ -93,3 +93,21 @@ func (f *FileMemoryStore) SetEmbeddingProvider(provider store.EmbeddingProvider)
 func (f *FileMemoryStore) Close() error {
 	return f.mgr.Close()
 }
+
+// ─── Knowledge Graph stubs (not supported in standalone mode) ─────────────────
+
+func (f *FileMemoryStore) KGIndexEntities(_ context.Context, _, _ string, _ []store.KGEntity, _ []store.KGRelation) error {
+	return nil
+}
+
+func (f *FileMemoryStore) KGStats(_ context.Context, _ string) (*store.KGStatsResult, error) {
+	return &store.KGStatsResult{}, nil
+}
+
+func (f *FileMemoryStore) GetSearchConfig(_ context.Context, _ string) (store.MemorySearchConfig, error) {
+	return store.DefaultMemorySearchConfig(), nil
+}
+
+func (f *FileMemoryStore) SetSearchConfig(_ context.Context, _ string, _ map[string]float64) error {
+	return nil
+}
