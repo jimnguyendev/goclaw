@@ -34,6 +34,8 @@ func DefaultManagerConfig(workspace string) ManagerConfig {
 	}
 }
 
+const l1CacheMax = 50
+
 // Manager coordinates memory indexing and search.
 type Manager struct {
 	store    *SQLiteStore
@@ -41,6 +43,10 @@ type Manager struct {
 	config   ManagerConfig
 	mu       sync.RWMutex
 	watcher  *Watcher
+	// l1Cache is an in-memory LRU cache for recently used embeddings (query + chunk).
+	// Keyed by content hash. Evicts oldest entry when full.
+	l1Cache    map[string][]float32
+	l1Keys     []string // insertion-order keys for LRU eviction
 }
 
 // NewManager creates a memory manager.
@@ -56,8 +62,9 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	}
 
 	return &Manager{
-		store:  store,
-		config: cfg,
+		store:   store,
+		config:  cfg,
+		l1Cache: make(map[string][]float32),
 	}, nil
 }
 
@@ -127,20 +134,55 @@ func (m *Manager) IndexFile(ctx context.Context, path string) error {
 		textsToEmbed = append(textsToEmbed, tc.Text)
 	}
 
-	// Generate embeddings if provider is available
+	// Generate embeddings if provider is available.
+	// Check L1 (in-memory) then L2 (SQLite cache) before calling the API,
+	// so unchanged chunks don't trigger an API round-trip on every re-index.
 	m.mu.RLock()
 	provider := m.provider
 	m.mu.RUnlock()
 
 	if provider != nil && len(textsToEmbed) > 0 {
-		embeddings, err := provider.Embed(ctx, textsToEmbed)
-		if err != nil {
-			slog.Warn("embedding generation failed, indexing without vectors", "path", relPath, "error", err)
-		} else {
-			for i := range chunkEntries {
-				if i < len(embeddings) {
-					chunkEntries[i].Embedding = embeddings[i]
-					chunkEntries[i].Model = provider.Model()
+		// Separate cached chunks from those that need embedding.
+		type uncachedEntry struct {
+			chunkIdx int
+			text     string
+			hash     string
+		}
+		var uncached []uncachedEntry
+
+		for i, entry := range chunkEntries {
+			// L1 check
+			if emb := m.l1Get(entry.Hash); emb != nil {
+				chunkEntries[i].Embedding = emb
+				chunkEntries[i].Model = provider.Model()
+				continue
+			}
+			// L2 check
+			if emb, ok := m.store.GetCachedEmbedding(entry.Hash, provider.Name(), provider.Model()); ok {
+				chunkEntries[i].Embedding = emb
+				chunkEntries[i].Model = provider.Model()
+				m.l1Set(entry.Hash, emb)
+				continue
+			}
+			uncached = append(uncached, uncachedEntry{chunkIdx: i, text: textsToEmbed[i], hash: entry.Hash})
+		}
+
+		if len(uncached) > 0 {
+			texts := make([]string, len(uncached))
+			for i, u := range uncached {
+				texts[i] = u.text
+			}
+			embeddings, err := provider.Embed(ctx, texts)
+			if err != nil {
+				slog.Warn("embedding generation failed, indexing without vectors", "path", relPath, "error", err)
+			} else {
+				for i, u := range uncached {
+					if i < len(embeddings) {
+						chunkEntries[u.chunkIdx].Embedding = embeddings[i]
+						chunkEntries[u.chunkIdx].Model = provider.Model()
+						m.l1Set(u.hash, embeddings[i])
+						m.store.CacheEmbedding(u.hash, provider.Name(), provider.Model(), embeddings[i])
+					}
 				}
 			}
 		}
@@ -196,6 +238,28 @@ func (m *Manager) IndexAll(ctx context.Context) error {
 
 	slog.Info("memory indexing complete", "chunks", m.store.ChunkCount())
 	return nil
+}
+
+// l1Get returns a cached embedding from the in-memory L1 cache (thread-safe).
+func (m *Manager) l1Get(hash string) []float32 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.l1Cache[hash]
+}
+
+// l1Set stores an embedding in the in-memory L1 cache, evicting the oldest entry if full.
+func (m *Manager) l1Set(hash string, emb []float32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.l1Cache[hash]; !exists {
+		if len(m.l1Keys) >= l1CacheMax {
+			oldest := m.l1Keys[0]
+			m.l1Keys = m.l1Keys[1:]
+			delete(m.l1Cache, oldest)
+		}
+		m.l1Keys = append(m.l1Keys, hash)
+	}
+	m.l1Cache[hash] = emb
 }
 
 // Search performs a hybrid search over indexed memory.
