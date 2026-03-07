@@ -214,12 +214,9 @@ func (c *CachedEmbeddingProvider) Embed(ctx context.Context, texts []string) ([]
 	var misses []miss
 	for i, t := range texts {
 		h := ContentHash(t)
-		c.mu.Lock()
-		if emb, ok := c.cache[h]; ok {
+		if emb := c.get(h); emb != nil {
 			results[i] = emb
-			c.mu.Unlock()
 		} else {
-			c.mu.Unlock()
 			misses = append(misses, miss{i, t})
 		}
 	}
@@ -244,6 +241,25 @@ func (c *CachedEmbeddingProvider) Embed(ctx context.Context, texts []string) ([]
 		}
 	}
 	return results, nil
+}
+
+// get retrieves and promotes a cached embedding (true LRU).
+func (c *CachedEmbeddingProvider) get(hash string) []float32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	emb, ok := c.cache[hash]
+	if !ok {
+		return nil
+	}
+	// LRU promote: move key to end of recency list
+	for i, k := range c.keys {
+		if k == hash {
+			c.keys = append(c.keys[:i], c.keys[i+1:]...)
+			c.keys = append(c.keys, hash)
+			break
+		}
+	}
+	return emb
 }
 
 func (c *CachedEmbeddingProvider) set(hash string, emb []float32) {

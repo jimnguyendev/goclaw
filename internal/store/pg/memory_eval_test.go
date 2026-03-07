@@ -258,23 +258,14 @@ type backendStats struct {
 	Multi  int // appeared in 2+ backends
 }
 
-func trackContributions(results []store.MemorySearchResult, rawChunks []scoredChunk) backendStats {
-	// Build path:line → sources map from raw pipeline output
-	srcMap := make(map[string][]string, len(rawChunks))
-	for _, c := range rawChunks {
-		k := fmt.Sprintf("%s:%d", c.Path, c.StartLine)
-		srcMap[k] = c.Sources
-	}
-
+func trackContributions(results []store.MemorySearchResult) backendStats {
 	var bs backendStats
 	for _, r := range results {
 		bs.Total++
-		k := fmt.Sprintf("%s:%d", r.Path, r.StartLine)
-		srcs := srcMap[k]
-		if len(srcs) >= 2 {
+		if len(r.Sources) >= 2 {
 			bs.Multi++
 		}
-		for _, s := range srcs {
+		for _, s := range r.Sources {
 			switch s {
 			case "fts":
 				bs.FTS++
@@ -439,7 +430,7 @@ func runEval(t *testing.T, ctx context.Context, mem *PGMemoryStore, agentID, use
 	typeAccum := make(map[string][3]float64)
 	typeCounts := make(map[string]int)
 
-	var allRaw []scoredChunk
+	var allResults []store.MemorySearchResult
 
 	for _, c := range evalCases {
 		results, err := mem.Search(ctx, c.Query, agentID, userID, store.MemorySearchOptions{MaxResults: 10})
@@ -447,6 +438,8 @@ func runEval(t *testing.T, ctx context.Context, mem *PGMemoryStore, agentID, use
 			t.Logf("Search error for %q: %v", c.Query, err)
 			continue
 		}
+
+		allResults = append(allResults, results...)
 
 		rel := relevantSet(c.RelevantKeys)
 		mrr := calcMRR(results, rel)
@@ -466,8 +459,6 @@ func runEval(t *testing.T, ctx context.Context, mem *PGMemoryStore, agentID, use
 
 		t.Logf("  [%s] %q → MRR=%.2f P@3=%.2f R@5=%.2f  top=%s",
 			c.Type, c.Query, mrr, p3, r5, topResult(results))
-
-		_ = allRaw // populated below via internal call
 	}
 
 	n := float64(len(evalCases))
@@ -480,11 +471,14 @@ func runEval(t *testing.T, ctx context.Context, mem *PGMemoryStore, agentID, use
 		report.ByType[typ] = [3]float64{acc[0] / cnt, acc[1] / cnt, acc[2] / cnt}
 	}
 
-	_ = allRaw
+	report.Backend = trackContributions(allResults)
 	return report
 }
 
 // runOldPipelineEval simulates old weighted-average pipeline directly on DB.
+// NOTE: This baseline uses FTS-only (no embedding provider) — the comparison
+// is fair for keyword and graph queries but may understate old-pipeline quality
+// on semantic queries where vector search would normally contribute.
 func runOldPipelineEval(t *testing.T, ctx context.Context, db *sql.DB, agentID, userID string) evalReport {
 	t.Helper()
 

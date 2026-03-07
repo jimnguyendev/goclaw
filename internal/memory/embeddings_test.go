@@ -113,6 +113,42 @@ func TestCachedProvider_BatchPartialHit(t *testing.T) {
 	}
 }
 
+// TestCachedProvider_LRUPromotion verifies that accessed entries are promoted (not FIFO).
+func TestCachedProvider_LRUPromotion(t *testing.T) {
+	inner := newMock()
+	p := WithL1Cache(inner)
+	ctx := context.Background()
+
+	// Insert "keep" and "evict" as first two entries
+	p.Embed(ctx, []string{"keep"})
+	p.Embed(ctx, []string{"evict"})
+
+	// Fill remaining cache slots (48 more)
+	for i := 2; i < l1CacheMax; i++ {
+		p.Embed(ctx, []string{string(rune('A'+i)) + "pad"})
+	}
+
+	// Access "keep" to promote it (moves to end of LRU list)
+	p.Embed(ctx, []string{"keep"})
+
+	// Insert one more to trigger eviction — "evict" is now oldest (not "keep")
+	p.Embed(ctx, []string{"OVERFLOW"})
+
+	// "keep" should still be in cache (was promoted)
+	callsBefore := inner.callCount.Load()
+	p.Embed(ctx, []string{"keep"})
+	if inner.callCount.Load() != callsBefore {
+		t.Error("'keep' was evicted despite being recently accessed — LRU promotion broken")
+	}
+
+	// "evict" should have been evicted (was oldest unreferenced)
+	callsBefore = inner.callCount.Load()
+	p.Embed(ctx, []string{"evict"})
+	if inner.callCount.Load() == callsBefore {
+		t.Error("'evict' should have been evicted but was still in cache")
+	}
+}
+
 // TestCachedProvider_LRUEviction verifies oldest entries are evicted when cache is full.
 func TestCachedProvider_LRUEviction(t *testing.T) {
 	inner := newMock()

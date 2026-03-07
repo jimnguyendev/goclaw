@@ -3,8 +3,10 @@ package pg
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,19 +28,56 @@ func (s *PGMemoryStore) Search(ctx context.Context, query string, agentID, userI
 	fetchN := maxResults * 3
 
 	// Parallel retrieval: FTS + vector + graph
-	ftsResults, _ := s.ftsSearch(ctx, query, aid, userID, fetchN)
-	if len(ftsResults) == 0 {
-		ftsResults, _ = s.likeSearch(ctx, query, aid, userID, fetchN)
-	}
+	var (
+		ftsResults, vecResults, graphResults []scoredChunk
+		wg                                  sync.WaitGroup
+	)
 
-	var vecResults []scoredChunk
-	if s.provider != nil {
-		if embeddings, err := s.provider.Embed(ctx, []string{query}); err == nil && len(embeddings) > 0 {
-			vecResults, _ = s.vectorSearch(ctx, embeddings[0], aid, userID, fetchN)
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		var err error
+		ftsResults, err = s.ftsSearch(ctx, query, aid, userID, fetchN)
+		if err != nil {
+			slog.Warn("memory.search.fts_failed", "error", err, "agent_id", agentID)
 		}
-	}
+		if len(ftsResults) == 0 {
+			ftsResults, err = s.likeSearch(ctx, query, aid, userID, fetchN)
+			if err != nil {
+				slog.Warn("memory.search.like_failed", "error", err, "agent_id", agentID)
+			}
+		}
+	}()
 
-	graphResults, _ := s.graphSearch(ctx, query, aid, userID, fetchN)
+	go func() {
+		defer wg.Done()
+		if s.provider != nil {
+			embeddings, err := s.provider.Embed(ctx, []string{query})
+			if err != nil {
+				slog.Warn("memory.search.embed_failed", "error", err, "agent_id", agentID)
+				return
+			}
+			if len(embeddings) > 0 {
+				var vErr error
+				vecResults, vErr = s.vectorSearch(ctx, embeddings[0], aid, userID, fetchN)
+				if vErr != nil {
+					slog.Warn("memory.search.vector_failed", "error", vErr, "agent_id", agentID)
+				}
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		var err error
+		graphResults, err = s.graphSearch(ctx, query, aid, userID, fetchN)
+		if err != nil {
+			slog.Warn("memory.search.graph_failed", "error", err, "agent_id", agentID)
+		}
+	}()
+
+	wg.Wait()
 
 	// RRF fusion
 	merged := rrfMerge(ftsResults, vecResults, graphResults, cfg.RRFk)
@@ -82,6 +121,7 @@ func (s *PGMemoryStore) Search(ctx context.Context, query string, agentID, userI
 			Snippet:   c.Text,
 			Source:    "memory",
 			Scope:     scope,
+			Sources:   c.Sources,
 		})
 		if len(out) >= maxResults {
 			break

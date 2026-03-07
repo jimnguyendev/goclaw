@@ -15,13 +15,14 @@ type DocumentInfo struct {
 
 // MemorySearchResult is a single result from memory search.
 type MemorySearchResult struct {
-	Path      string  `json:"path"`
-	StartLine int     `json:"start_line"`
-	EndLine   int     `json:"end_line"`
-	Score     float64 `json:"score"`
-	Snippet   string  `json:"snippet"`
-	Source    string  `json:"source"`
-	Scope     string  `json:"scope,omitempty"` // "global" or "personal"
+	Path      string   `json:"path"`
+	StartLine int      `json:"start_line"`
+	EndLine   int      `json:"end_line"`
+	Score     float64  `json:"score"`
+	Snippet   string   `json:"snippet"`
+	Source    string   `json:"source"`
+	Scope     string   `json:"scope,omitempty"`   // "global" or "personal"
+	Sources   []string `json:"sources,omitempty"` // backends that contributed: "fts", "vector", "graph"
 }
 
 // MemorySearchOptions configures a memory search query.
