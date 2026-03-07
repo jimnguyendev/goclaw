@@ -2,6 +2,8 @@ package pg
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
@@ -454,18 +456,30 @@ func (s *PGMemoryStore) KGStats(ctx context.Context, agentID string) (*store.KGS
 // trackAccess bumps access_count and sets accessed_at for returned chunk IDs.
 // Called asynchronously so it never blocks the search response.
 func (s *PGMemoryStore) trackAccess(ctx context.Context, chunks []scoredChunk) {
-	ids := make([]string, 0, len(chunks))
-	for _, c := range chunks {
-		if c.ID != "" {
-			ids = append(ids, "'"+c.ID+"'")
-		}
-	}
-	if len(ids) == 0 {
+	if len(chunks) == 0 {
 		return
 	}
-	s.db.ExecContext(ctx,
+
+	// Use parameterized query to avoid SQL injection from chunk IDs.
+	params := make([]string, 0, len(chunks))
+	args := make([]interface{}, 0, len(chunks))
+	for _, c := range chunks {
+		if c.ID != "" {
+			args = append(args, c.ID)
+			params = append(params, fmt.Sprintf("$%d::uuid", len(args)))
+		}
+	}
+	if len(params) == 0 {
+		return
+	}
+
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE memory_chunks
 		 SET access_count = access_count + 1, accessed_at = NOW()
-		 WHERE id::text IN (`+strings.Join(ids, ",")+`)`,
+		 WHERE id IN (`+strings.Join(params, ",")+`)`,
+		args...,
 	)
+	if err != nil {
+		slog.Warn("memory.search.track_access_failed", "error", err, "chunk_count", len(params))
+	}
 }

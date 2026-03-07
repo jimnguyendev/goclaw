@@ -23,7 +23,10 @@ func (s *PGMemoryStore) Search(ctx context.Context, query string, agentID, userI
 
 	aid := mustParseUUID(agentID)
 
-	cfg, _ := s.GetSearchConfig(ctx, agentID)
+	cfg, cfgErr := s.GetSearchConfig(ctx, agentID)
+	if cfgErr != nil {
+		slog.Warn("memory.search.config_failed", "error", cfgErr, "agent_id", agentID)
+	}
 
 	fetchN := maxResults * 3
 
@@ -261,11 +264,14 @@ func (s *PGMemoryStore) scanChunks(ctx context.Context, q string, args []interfa
 	var results []scoredChunk
 	for rows.Next() {
 		var r scoredChunk
-		rows.Scan(&r.ID, &r.Path, &r.StartLine, &r.EndLine, &r.Text,
-			&r.UserID, &r.AccessedAt, &r.AccessCount, &r.IsEvergreen, &r.Score)
+		if err := rows.Scan(&r.ID, &r.Path, &r.StartLine, &r.EndLine, &r.Text,
+			&r.UserID, &r.AccessedAt, &r.AccessCount, &r.IsEvergreen, &r.Score); err != nil {
+			slog.Warn("memory.search.scan_failed", "error", err)
+			continue
+		}
 		results = append(results, r)
 	}
-	return results, nil
+	return results, rows.Err()
 }
 
 // rrfMerge combines three ranked lists via Reciprocal Rank Fusion.
