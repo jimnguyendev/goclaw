@@ -384,21 +384,122 @@ So sánh: OpenClaw config qua JSON5 file, phải restart gateway. GoClaw config 
 
 ## Embedding provider
 
-GoClaw hỗ trợ OpenAI-compatible embedding API:
+### Cấu hình qua config.json
 
-```go
-provider := memory.NewOpenAIEmbeddingProvider(
-    "openai",           // tên provider
-    apiKey,             // API key
-    "https://api.openai.com/v1",  // base URL
-    "text-embedding-3-small",     // model
-)
-provider.WithDimensions(1536)  // optional: truncate output
+```json5
+{
+  agents: {
+    defaults: {
+      memory: {
+        enabled: true,                              // bật/tắt toàn bộ memory
+        embedding_provider: "openai",               // "openai" | "openrouter" | "gemini" | "" (auto)
+        embedding_model: "text-embedding-3-small",  // model embedding
+        embedding_api_base: "",                     // custom endpoint (vLLM, proxy...)
+      }
+    }
+  }
+}
 ```
 
-Tương thích với: OpenAI, OpenRouter, vLLM, hoặc bất kỳ endpoint nào theo chuẩn `/v1/embeddings`.
+### Bật / Tắt
 
-**Vector dimension**: pgvector column dùng `vector(1536)`. Đảm bảo embedding model output khớp dimension này.
+| Config | Kết quả |
+|--------|---------|
+| `enabled: true` (hoặc không set) | Memory bật, embedding tùy provider |
+| `enabled: false` | Memory tắt hoàn toàn |
+| `enabled: true`, không có API key nào | Memory bật nhưng **FTS-only** (không có vector search) |
+
+Khi không có embedding provider, pipeline vẫn hoạt động — chỉ thiếu kênh vector. FTS và KG vẫn chạy bình thường.
+
+### Auto-selection
+
+Khi `embedding_provider` = `""` (hoặc không set), GoClaw tự detect theo thứ tự:
+
+```
+1. openai      — nếu có OPENAI_API_KEY hoặc providers.openai.apiKey
+2. openrouter  — nếu có OPENROUTER_API_KEY hoặc providers.openrouter.apiKey
+3. gemini      — nếu có GEMINI_API_KEY hoặc providers.gemini.apiKey
+4. nil         — FTS-only mode
+```
+
+Thứ tự này match với OpenClaw (cùng codebase origin).
+
+### API key
+
+API key được resolve từ 2 nguồn (ưu tiên từ trên xuống):
+
+1. **Config JSON5**: `providers.openai.apiKey` (được encrypt bằng AES-256-GCM trong DB cho managed mode)
+2. **Environment variable**: `OPENAI_API_KEY` trong `.env.local` hoặc system env
+
+```bash
+# .env.local
+OPENAI_API_KEY=sk-...
+# hoặc
+OPENROUTER_API_KEY=sk-or-...
+# hoặc
+GEMINI_API_KEY=AI...
+```
+
+### Đổi provider tại runtime
+
+Thay đổi `embedding_provider` hoặc API key trong config rồi restart gateway. Khi provider/model thay đổi, GoClaw tự động **backfill embedding** cho các chunk chưa có vector:
+
+```go
+// cmd/gateway.go — chạy sau khi set provider
+go func() {
+    count, err := memStore.BackfillEmbeddings(ctx)
+    slog.Info("memory embeddings backfilled", "count", count)
+}()
+```
+
+### Onboard wizard
+
+Khi chạy `./goclaw onboard`, wizard hỏi chọn embedding provider:
+
+```
+Memory Embedding Provider:
+  1. Auto-detect (use chat provider's API key)
+  2. OpenAI (text-embedding-3-small)
+  3. OpenRouter (openai/text-embedding-3-small)
+  4. Gemini (text-embedding-004)
+```
+
+Lựa chọn được ghi vào `config.json` tự động.
+
+### Provider được hỗ trợ
+
+| Provider | Model mặc định | API base | Ghi chú |
+|----------|---------------|----------|---------|
+| `openai` | `text-embedding-3-small` | `https://api.openai.com/v1` | Hỗ trợ `WithDimensions()` |
+| `openrouter` | `openai/text-embedding-3-small` | `https://openrouter.ai/api/v1` | Auto-prefix `openai/` nếu thiếu |
+| `gemini` | `gemini-embedding-001` | `https://generativelanguage.googleapis.com/v1beta/openai` | Force `WithDimensions(1536)` |
+| Custom | Tuỳ | Set `embedding_api_base` | Bất kỳ endpoint chuẩn `/v1/embeddings` |
+
+### Custom endpoint (vLLM, proxy...)
+
+```json5
+{
+  agents: {
+    defaults: {
+      memory: {
+        embedding_provider: "openai",
+        embedding_model: "BAAI/bge-large-en-v1.5",
+        embedding_api_base: "http://localhost:8000/v1"  // vLLM local
+      }
+    }
+  }
+}
+```
+
+Tương thích với: OpenAI, OpenRouter, vLLM, LiteLLM proxy, hoặc bất kỳ endpoint nào theo chuẩn `/v1/embeddings`.
+
+### L1 Cache
+
+Provider luôn được wrap qua `WithL1Cache()` trước khi gán — giảm API call cho chunk không đổi và query lặp lại (xem phần L1 Embedding Cache).
+
+### Vector dimension
+
+pgvector column dùng `vector(1536)`. Đảm bảo embedding model output khớp dimension này. Nếu dùng model output dimension khác, cần sửa migration hoặc dùng `WithDimensions(1536)` để truncate.
 
 ---
 
