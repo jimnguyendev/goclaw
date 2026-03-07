@@ -6,7 +6,8 @@ Three foundational systems that shape each agent's personality (Bootstrap), know
 
 - Bootstrap: load context files, truncate to fit context window, seed templates for new users
 - Skills: 5-tier resolution hierarchy, BM25 search, hot-reload via fsnotify
-- Memory: chunking, **tri-hybrid search** (FTS + vector + **Knowledge Graph**), **RRF fusion**, **temporal decay**, **MMR re-ranking**, memory flush before compaction
+- Memory: chunking, hybrid search (FTS + vector), memory flush before compaction
+- System Prompt: build 15+ sections in a fixed order with two modes (full and minimal)
 
 ---
 
@@ -163,7 +164,7 @@ Context files are wrapped in `<context_file>` XML tags with a defensive preamble
 Two files are system-injected by the resolver rather than stored on disk or in the DB:
 
 | File | Injection Condition | Content |
-|------|-------------------|---------| 
+|------|-------------------|---------|
 | `DELEGATION.md` | Agent has manual (non-team) agent links | ≤15 targets: static list. >15 targets: search instruction for `delegate_search` tool |
 | `TEAM.md` | Agent is a member of a team | Team name, role, teammate list with descriptions, workflow sentence |
 
@@ -400,228 +401,36 @@ flowchart TD
 
 ---
 
-## 15. Memory Search -- Tri-Hybrid Pipeline (Managed Mode)
+## 15. Hybrid Search
 
-> **Thay đổi lớn so với phiên bản cũ**: Pipeline cũ dùng weighted merge (FTS 0.3 + vector 0.7). Pipeline mới dùng **3 kênh song song** (FTS + vector + Knowledge Graph), hợp nhất bằng **RRF**, rồi áp **temporal decay** và **MMR re-ranking**.
-
-```mermaid
-flowchart TD
-    Q["Search(query)"] --> PAR["Parallel retrieval"]
-
-    subgraph "Parallel retrieval (3 channels)"
-        PAR --> FTS["1. FTS Search<br/>plainto_tsquery('simple')<br/>Fallback: ILIKE keyword scan"]
-        PAR --> VEC["2. Vector Search<br/>pgvector cosine distance<br/>(embedding <=> operator)"]
-        PAR --> KG["3. Knowledge Graph BFS<br/>seed → BFS → chunk mentions"]
-    end
-
-    FTS --> RRF["RRF Fusion<br/>score = Σ 1/(k + rank_i)<br/>k default = 60"]
-    VEC --> RRF
-    KG --> RRF
-
-    RRF --> DECAY["Temporal Decay<br/>score *= 0.5^(effectiveAge/halfLife)<br/>Evergreen chunks skip decay"]
-    DECAY --> SORT["Sort score DESC"]
-    SORT --> MMR["MMR Re-ranking<br/>lambda=0.7: balance relevance vs diversity<br/>path-based similarity approximation"]
-    MMR --> TRACK["Async trackAccess()<br/>UPDATE access_count, accessed_at"]
-    TRACK --> OUT["Final results (maxResults=6 default)"]
-```
-
-### RRF Fusion (Reciprocal Rank Fusion)
-
-RRF ưu điểm: scale-agnostic, không cần normalize điểm từ các kênh khác nhau.
-
-```
-score(doc) = Σ_i  1 / (k + rank_i(doc))
-```
-
-- **k = 60** (default, tunable via `memory_search_config`)
-- Chunk xuất hiện ở nhiều kênh nhận điểm RRF cộng dồn
-- `Sources` field ghi lại kênh nào đóng góp: `["fts", "vector", "graph"]`
-
-### Temporal Decay
-
-Chunks lâu không được query dần giảm điểm. Chunks được truy cập thường xuyên bị làm chậm quá trình suy giảm.
-
-```
-effectiveAge = ageDays - accessCount × decayAccessFactor × halfLife
-decay = 0.5 ^ (effectiveAge / halfLife)
-score *= decay
-
-# Access boost bonus
-if accessCount > 0:
-    score *= 1 + log(accessCount) × 0.1
-```
-
-| Parameter | Default | Tunable |
-|-----------|---------|---------|
-| `decay_half_life` | 30 ngày | ✓ per-agent |
-| `decay_access_factor` | 0.1 | ✓ per-agent |
-| `is_evergreen = true` | Skip decay | Chunk-level flag |
-
-### MMR Re-ranking (Maximal Marginal Relevance)
-
-Tránh trả về nhiều chunks từ cùng một file/topic — giữ diversity.
-
-```
-MMR_score(d) = λ × relevance(d) - (1 - λ) × max_sim(d, selected)
-```
-
-- **λ = 0.7** (default): nghiêng về relevance, vẫn có diversity
-- `max_sim` xấp xỉ qua path similarity (không load embeddings):
-  - Same file: 0.8
-  - Same directory: 0.3
-  - Different directory: 0.1
-
----
-
-## 16. Knowledge Graph (Managed Mode)
-
-> **Thay đổi mới hoàn toàn**: Knowledge Graph là backend thứ 3 trong tri-hybrid pipeline. Agent tự chèn entities và relations (không có LLM extraction ẩn). BFS traversal từ seed nodes để tìm chunks liên quan.
-
-### Schema
-
-```mermaid
-erDiagram
-    memory_kg_nodes {
-        uuid id PK
-        uuid agent_id FK
-        text user_id
-        text canonical_name
-        text node_type
-        int degree "cached edge count"
-        timestamptz created_at
-    }
-    memory_kg_aliases {
-        uuid agent_id PK
-        text alias PK
-        uuid node_id FK
-    }
-    memory_kg_edges {
-        uuid id PK
-        uuid agent_id FK
-        uuid source_id FK
-        uuid target_id FK
-        text relation
-        float weight
-        timestamptz valid_from "T-timeline: when fact was true"
-        timestamptz valid_until "T-timeline: when fact ended"
-        timestamptz known_from "T'-timeline: when system recorded"
-        timestamptz known_until "T'-timeline: when system retracted"
-    }
-    memory_kg_chunk_mentions {
-        uuid chunk_id PK,FK
-        uuid node_id PK,FK
-    }
-    memory_kg_nodes ||--o{ memory_kg_aliases : "has aliases"
-    memory_kg_nodes ||--o{ memory_kg_edges : "source"
-    memory_kg_nodes ||--o{ memory_kg_edges : "target"
-    memory_kg_nodes ||--o{ memory_kg_chunk_mentions : "mentioned in"
-```
-
-### KG Indexing Flow
+Combines full-text search and vector search with weighted merging.
 
 ```mermaid
 flowchart TD
-    AGENT["Agent calls KGIndexEntities()"] --> UPSERT["Upsert nodes<br/>ON CONFLICT → update node_type"]
-    UPSERT --> ALIASES["Upsert aliases<br/>lower(alias) → node_id"]
-    ALIASES --> EDGES["Upsert edges<br/>source→target, relation, weight"]
-    EDGES --> DEGREE["Refresh degree cache<br/>UPDATE memory_kg_nodes SET degree = COUNT(edges)"]
+    Q["Search(query)"] --> FTS["FTS Search<br/>tsvector + plainto_tsquery"]
+    Q --> VEC["Vector Search<br/>pgvector (cosine distance)"]
+    FTS --> MERGE["hybridMerge()"]
+    VEC --> MERGE
+    MERGE --> NORM["Normalize FTS scores to 0..1<br/>Vector scores already in 0..1"]
+    NORM --> WEIGHT["Weighted sum<br/>textWeight = 0.3<br/>vectorWeight = 0.7"]
+    WEIGHT --> BOOST["Per-user scope: 1.2x boost<br/>Dedup: user copy wins over global"]
+    BOOST --> RESULT["Sorted + filtered results"]
 ```
 
-- Nodes: `canonical_name` unique per `(agent_id, user_id)`
-- Edges: bi-temporal (`valid_from/until` = thực tế, `known_from/until` = ghi nhận)
-- Degree cached trên node để hub-capping nhanh khi BFS
+### Search Implementation
 
-### KG BFS Search Flow
+| Aspect | Detail |
+|--------|--------|
+| Storage | PostgreSQL + tsvector + pgvector |
+| FTS | `plainto_tsquery('simple')` |
+| Vector | pgvector type |
+| Scope | Per-agent + per-user |
 
-```mermaid
-flowchart TD
-    Q["query string"] --> SEED["kgFindSeeds()<br/>LIKE '%canonical_name%' OR alias match<br/>Limit 10 seeds"]
-    SEED --> HUB{"Multiple seeds?"}
-    HUB -->|Yes| EXCL["Exclude highest-degree hub<br/>(too generic, adds noise)"]
-    HUB -->|No| BFS
-    EXCL --> BFS
-
-    BFS["kgBFS(seeds, adj, degrees, maxHops=3)"]
-    BFS --> CAP{"Node degree > 15?"}
-    CAP -->|Yes| CAP1["Hub-cap: expand max 1 hop"]
-    CAP -->|No| CAP2["Expand up to 3 hops"]
-    CAP1 --> CHUNKS
-    CAP2 --> CHUNKS
-
-    CHUNKS["kgChunksFromVisited()<br/>JOIN memory_kg_chunk_mentions → memory_chunks"]
-    CHUNKS --> SCORE["Score = Σ 1/(1+hop) per node<br/>× seed-coverage multiplier"]
-    SCORE --> RESULT["Sorted scoredChunks"]
-```
-
-**Seed-coverage multiplier**: chunk mentions nhiều seeds → score cao hơn.
-```
-coverage = 1.0 + seedsHit / seedCount   (khi seedCount > 1)
-```
-
-### KG Constants
-
-| Constant | Value | Ý nghĩa |
-|----------|-------|---------|
-| `hubDegreeThreshold` | 15 | Node "hub" — bị giới hạn 1 hop khi BFS |
-| `kgBFSMaxHops` | 3 | Độ sâu BFS tối đa |
+When both FTS and vector search return results, scores are merged using the weighted sum. When only one channel returns results, its scores are used directly (weights normalized to 1.0).
 
 ---
 
-## 17. Memory -- MemoryInterceptor (Managed Mode)
-
-> **Thay đổi mới**: `MemoryInterceptor` route tất cả read/write/list memory files từ tools (`read_file`, `write_file`, `list_files`) sang PostgreSQL thay vì filesystem — bao gồm cả `list_files("memory")`.
-
-```mermaid
-flowchart TD
-    TOOL["Tool call: read_file / write_file / list_files"] --> CHECK{"isMemoryPath()?"}
-    CHECK -->|No| FS["Pass through to filesystem"]
-    CHECK -->|Yes| INTERCEPT["MemoryInterceptor"]
-
-    INTERCEPT --> MODE{"agentID in context?"}
-    MODE -->|No| FS2["Not in managed mode → pass through"]
-    MODE -->|Yes| RESOLVE["Normalize path to workspace-relative"]
-
-    RESOLVE --> OP{"Operation?"}
-    OP -->|ReadFile| READ["GetDocument(agentID, userID, path)<br/>→ try per-user, fallback to global"]
-    OP -->|WriteFile| WRITE["PutDocument(agentID, userID, path, content)<br/>If .md → IndexDocument() for chunk+embed"]
-    OP -->|ListFiles| LIST["ListDocuments(agentID, userID)<br/>[FILE] path lines"]
-```
-
-**Memory paths được intercepted**:
-- `MEMORY.md`, `memory.md` (root-level)
-- `memory/*` (relative)
-- `{workspace}/MEMORY.md`, `{workspace}/memory/*` (absolute)
-
-**Non-.md files** (e.g. `heartbeat-state.json`): lưu vào `memory_documents` nhưng **không** chunk/embed — chỉ key-value storage.
-
----
-
-## 18. Memory -- Per-Agent Search Config
-
-Mỗi agent có thể tuning các tham số search pipeline qua `memory_search_config` table.
-
-```sql
--- Schema
-CREATE TABLE memory_search_config (
-    agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    key      TEXT NOT NULL,
-    value    TEXT NOT NULL,
-    PRIMARY KEY (agent_id, key)
-);
-```
-
-| Key | Default | Ý nghĩa |
-|-----|---------|---------|
-| `rrf_k` | 60 | RRF constant — cao hơn = ít nhạy cảm hơn với rank |
-| `decay_half_life` | 30.0 | Half-life của temporal decay (ngày) |
-| `decay_access_factor` | 0.1 | Mỗi lần access làm chậm decay thêm bao nhiêu |
-| `mmr_lambda` | 0.7 | MMR balance: 1.0 = pure relevance, 0.0 = pure diversity |
-
-Config được load mỗi search call (`GetSearchConfig`) và overlay lên system defaults.
-
----
-
-## 19. Memory Flush -- Pre-Compaction
+## 16. Memory Flush -- Pre-Compaction
 
 Before session history is compacted (summarized + truncated), the agent is given an opportunity to write durable memories to disk.
 
@@ -651,24 +460,6 @@ The flush is idempotent per compaction cycle -- it will not run again until the 
 
 ---
 
-## 20. Standalone vs. Managed -- Full Comparison
-
-| Aspect | Standalone | Managed |
-|--------|-----------|---------|
-| Storage | SQLite + FTS5 | PostgreSQL + tsvector + pgvector |
-| Search mode | Hybrid (FTS5 BM25 + vector cosine) | Tri-hybrid (FTS + vector + KG BFS) |
-| Fusion | Weighted sum (text 0.3, vector 0.7) | **RRF** (Reciprocal Rank Fusion) |
-| Temporal decay | ✗ | ✓ (half-life 30 days, access boost) |
-| MMR re-ranking | ✗ | ✓ (λ=0.7 default) |
-| Knowledge Graph | ✗ (stub) | ✓ (BFS 3 hops, hub-capping) |
-| MemoryInterceptor | ✗ | ✓ (routes tools → DB) |
-| Per-agent search config | ✗ | ✓ (`memory_search_config` table) |
-| File watcher | fsnotify (1500ms debounce) | Not needed (DB-backed) |
-| Scope | Global (single agent) | Per-agent + per-user |
-| `list_files("memory")` | Filesystem | MemoryInterceptor → DB |
-
----
-
 ## File Reference
 
 | File | Description |
@@ -683,28 +474,22 @@ The flush is idempotent per compaction cycle -- it will not run again until the 
 | `internal/agent/resolver.go` | Agent resolution, DELEGATION.md + TEAM.md injection |
 | `internal/agent/loop_history.go` | Context file merging (base + per-user, base-only preserved) |
 | `internal/agent/memoryflush.go` | Memory flush logic (shouldRunMemoryFlush, runMemoryFlush) |
-| `internal/store/memory_store.go` | MemoryStore interface + KG types + MemorySearchConfig |
-| `internal/store/pg/memory_docs.go` | PGMemoryStore -- document CRUD, IndexDocument, BackfillEmbeddings |
-| `internal/store/pg/memory_search.go` | Tri-hybrid search pipeline (RRF, temporal decay, MMR, likeSearch fallback) |
-| `internal/store/pg/memory_kg.go` | Knowledge Graph (KGIndexEntities, BFS, kgChunksFromVisited, trackAccess) |
-| `internal/store/pg/memory_config.go` | Per-agent search config (GetSearchConfig, SetSearchConfig) |
-| `internal/tools/memory.go` | memory_search + memory_get tools |
-| `internal/tools/memory_interceptor.go` | MemoryInterceptor -- routes read_file/write_file/list_files → DB |
 | `internal/http/summoner.go` | Agent summoning -- LLM-powered context file generation |
 | `internal/skills/loader.go` | Skill loader (5-tier hierarchy, BuildSummary, filtering) |
 | `internal/skills/search.go` | BM25 search index (tokenization, IDF scoring) |
 | `internal/skills/watcher.go` | fsnotify watcher (500ms debounce, version bumping) |
 | `internal/store/pg/skills.go` | Managed skill store (embedding search, backfill) |
 | `internal/store/pg/skills_grants.go` | Skill grants (agent/user visibility, version pinning) |
-| `migrations/000011_memory_kg.up.sql` | KG tables + temporal decay columns + search config table |
+| `internal/store/pg/memory_docs.go` | Memory document store (chunking, indexing, embedding) |
+| `internal/store/pg/memory_search.go` | Hybrid search (FTS + vector merge, weighted scoring) |
 
 ---
 
 ## Cross-References
 
 | Document | Relevant Content |
-|----------|-----------------| 
+|----------|-----------------|
 | [00-architecture-overview.md](./00-architecture-overview.md) | Startup sequence, managed mode wiring |
 | [01-agent-loop.md](./01-agent-loop.md) | Agent loop calls BuildSystemPrompt, compaction flow |
 | [03-tools-system.md](./03-tools-system.md) | ContextFileInterceptor routing read_file/write_file to DB |
-| [06-store-data-model.md](./06-store-data-model.md) | memory_documents, memory_chunks, memory_kg_* tables |
+| [06-store-data-model.md](./06-store-data-model.md) | memory_documents, memory_chunks tables |
