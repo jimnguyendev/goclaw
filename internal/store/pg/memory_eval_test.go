@@ -10,7 +10,9 @@ package pg
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"os"
@@ -161,6 +163,53 @@ var evalCases = []evalCase{
 		RelevantKeys: []string{"memory/stress.md:1", "memory/deadline.md:1"},
 		Type:         "graph",
 	},
+}
+
+// ─── Deterministic mock embedder ──────────────────────────────────────────────
+
+// hashEmbedder generates deterministic 1536-dim embeddings from text hash.
+// Semantically similar texts won't produce similar vectors (unlike a real model),
+// but this ensures vector search is exercised in both pipelines, making the
+// A/B comparison fair: both old and new have FTS+vector, only new adds KG+RRF+decay+MMR.
+type hashEmbedder struct{}
+
+func (h *hashEmbedder) Name() string  { return "hash-mock" }
+func (h *hashEmbedder) Model() string { return "deterministic-1536" }
+
+func (h *hashEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	results := make([][]float32, len(texts))
+	for i, t := range texts {
+		results[i] = hashToVector(t, 1536)
+	}
+	return results, nil
+}
+
+// hashToVector produces a deterministic unit-length vector from text.
+func hashToVector(text string, dims int) []float32 {
+	vec := make([]float32, dims)
+	// Use SHA256 repeatedly to fill all dimensions.
+	data := []byte(text)
+	for offset := 0; offset < dims; offset += 8 {
+		h := sha256.Sum256(data)
+		data = h[:] // chain for next iteration
+		for j := 0; j < 8 && offset+j < dims; j++ {
+			// Convert 4 bytes to float32 in [-1, 1]
+			bits := binary.LittleEndian.Uint32(h[j*4 : j*4+4])
+			vec[offset+j] = float32(bits)/float32(math.MaxUint32)*2 - 1
+		}
+	}
+	// Normalize to unit length for cosine similarity.
+	var norm float64
+	for _, v := range vec {
+		norm += float64(v) * float64(v)
+	}
+	norm = math.Sqrt(norm)
+	if norm > 0 {
+		for i := range vec {
+			vec[i] = float32(float64(vec[i]) / norm)
+		}
+	}
+	return vec
 }
 
 // ─── Old pipeline (weighted average) — preserved for comparison ───────────────
@@ -335,6 +384,8 @@ func TestMemoryEval(t *testing.T) {
 	mustExec(t, db, `INSERT INTO agents (id, name) VALUES ($1, 'eval-agent') ON CONFLICT DO NOTHING`, agentID)
 
 	mem := NewPGMemoryStore(db, DefaultPGMemoryConfig())
+	embedder := &hashEmbedder{}
+	mem.SetEmbeddingProvider(embedder)
 
 	// ── Seed memories ─────────────────────────────────────────────────────────
 	t.Log("Seeding eval memories...")
@@ -380,7 +431,7 @@ func TestMemoryEval(t *testing.T) {
 
 	// ── Run OLD pipeline eval ─────────────────────────────────────────────────
 	t.Log("Running old pipeline eval...")
-	oldReport := runOldPipelineEval(t, ctx, db, agentID, userID)
+	oldReport := runOldPipelineEval(t, ctx, db, embedder, agentID, userID)
 
 	// ── Print results ─────────────────────────────────────────────────────────
 	oldReport.print(t)
@@ -476,16 +527,16 @@ func runEval(t *testing.T, ctx context.Context, mem *PGMemoryStore, agentID, use
 }
 
 // runOldPipelineEval simulates old weighted-average pipeline directly on DB.
-// NOTE: This baseline uses FTS-only (no embedding provider) — the comparison
-// is fair for keyword and graph queries but may understate old-pipeline quality
-// on semantic queries where vector search would normally contribute.
-func runOldPipelineEval(t *testing.T, ctx context.Context, db *sql.DB, agentID, userID string) evalReport {
+// Uses the same embedding provider as the new pipeline so both have FTS+vector,
+// isolating the architectural difference (weighted-avg vs RRF+KG+decay+MMR).
+func runOldPipelineEval(t *testing.T, ctx context.Context, db *sql.DB, embedder store.EmbeddingProvider, agentID, userID string) evalReport {
 	t.Helper()
 
 	mem := NewPGMemoryStore(db, DefaultPGMemoryConfig())
+	mem.SetEmbeddingProvider(embedder)
 	aid := mustParseUUID(agentID)
 	report := evalReport{
-		Name:   "OLD (weighted avg, no KG)",
+		Name:   "OLD (weighted avg, FTS+vector, no KG)",
 		ByType: make(map[string][3]float64),
 	}
 
@@ -498,10 +549,26 @@ func runOldPipelineEval(t *testing.T, ctx context.Context, db *sql.DB, agentID, 
 		if len(fts) == 0 {
 			fts, _ = mem.likeSearch(ctx, c.Query, aid, userID, 20)
 		}
-		// No vector (no provider in test), no graph
-		merged := hybridMergeOld(fts, nil, 1.0, 0)
+
+		// Vector search using the shared embedder
+		var vec []scoredChunk
+		if embedder != nil {
+			embeddings, err := embedder.Embed(ctx, []string{c.Query})
+			if err == nil && len(embeddings) > 0 {
+				vec, _ = mem.vectorSearch(ctx, embeddings[0], aid, userID, 20)
+			}
+		}
+
+		merged := hybridMergeOld(fts, vec, 0.3, 0.7)
 
 		// Convert to MemorySearchResult
+		var sources []string
+		if len(fts) > 0 {
+			sources = append(sources, "fts")
+		}
+		if len(vec) > 0 {
+			sources = append(sources, "vector")
+		}
 		results := make([]store.MemorySearchResult, 0, len(merged))
 		for _, ch := range merged {
 			scope := "global"
@@ -516,7 +583,7 @@ func runOldPipelineEval(t *testing.T, ctx context.Context, db *sql.DB, agentID, 
 				Snippet:   ch.Text,
 				Source:    "memory",
 				Scope:     scope,
-				Sources:   []string{"fts"},
+				Sources:   sources,
 			})
 		}
 
