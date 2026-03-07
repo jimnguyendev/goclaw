@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 
 	"github.com/google/uuid"
@@ -15,13 +16,13 @@ func (s *PGMemoryStore) GetSearchConfig(ctx context.Context, agentID string) (st
 
 	aid, err := uuid.Parse(agentID)
 	if err != nil {
-		return cfg, nil
+		return cfg, fmt.Errorf("parse agent_id: %w", err)
 	}
 
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT key, value FROM memory_search_config WHERE agent_id = $1", aid)
 	if err != nil {
-		return cfg, nil // silently fall back to defaults
+		return cfg, fmt.Errorf("query search config: %w", err)
 	}
 	defer rows.Close()
 
@@ -45,7 +46,7 @@ func (s *PGMemoryStore) GetSearchConfig(ctx context.Context, agentID string) (st
 			cfg.MMRLambda = f
 		}
 	}
-	return cfg, nil
+	return cfg, rows.Err()
 }
 
 // SetSearchConfig upserts one or more scoring parameters for an agent.

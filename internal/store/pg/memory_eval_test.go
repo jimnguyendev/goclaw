@@ -491,6 +491,7 @@ func runOldPipelineEval(t *testing.T, ctx context.Context, db *sql.DB, agentID, 
 
 	typeAccum := make(map[string][3]float64)
 	typeCounts := make(map[string]int)
+	var allResults []store.MemorySearchResult
 
 	for _, c := range evalCases {
 		fts, _ := mem.ftsSearch(ctx, c.Query, aid, userID, 20)
@@ -515,8 +516,11 @@ func runOldPipelineEval(t *testing.T, ctx context.Context, db *sql.DB, agentID, 
 				Snippet:   ch.Text,
 				Source:    "memory",
 				Scope:     scope,
+				Sources:   []string{"fts"},
 			})
 		}
+
+		allResults = append(allResults, results...)
 
 		rel := relevantSet(c.RelevantKeys)
 		mrr := calcMRR(results, rel)
@@ -545,9 +549,7 @@ func runOldPipelineEval(t *testing.T, ctx context.Context, db *sql.DB, agentID, 
 		report.ByType[typ] = [3]float64{acc[0] / cnt, acc[1] / cnt, acc[2] / cnt}
 	}
 
-	// Old pipeline: no graph contribution by definition
-	report.Backend = backendStats{Total: len(evalCases) * 3, FTS: len(evalCases) * 3}
-
+	report.Backend = trackContributions(allResults)
 	return report
 }
 
