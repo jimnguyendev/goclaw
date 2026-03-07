@@ -3,12 +3,82 @@ package memory
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"strings"
+	"sync"
 )
+
+// ContentHash returns a short SHA256 hex digest of the content (first 16 bytes).
+func ContentHash(text string) string {
+	h := sha256.Sum256([]byte(text))
+	return fmt.Sprintf("%x", h[:16])
+}
+
+// TextChunk is a chunk of text with line number metadata.
+type TextChunk struct {
+	Text      string
+	StartLine int
+	EndLine   int
+}
+
+// ChunkText splits text into chunks at paragraph boundaries.
+// Each chunk includes its starting line number in the source file.
+func ChunkText(text string, maxChunkLen int) []TextChunk {
+	if maxChunkLen <= 0 {
+		maxChunkLen = 1000
+	}
+
+	lines := strings.Split(text, "\n")
+	var chunks []TextChunk
+	var current strings.Builder
+	startLine := 1
+
+	flush := func(endLine int) {
+		content := strings.TrimSpace(current.String())
+		if content != "" {
+			chunks = append(chunks, TextChunk{
+				Text:      content,
+				StartLine: startLine,
+				EndLine:   endLine,
+			})
+		}
+		current.Reset()
+		startLine = endLine + 1
+	}
+
+	for i, line := range lines {
+		lineNum := i + 1
+
+		// Paragraph boundary: empty line
+		if strings.TrimSpace(line) == "" && current.Len() > 0 {
+			if current.Len() >= maxChunkLen/2 {
+				flush(lineNum - 1)
+				continue
+			}
+		}
+
+		if current.Len() > 0 {
+			current.WriteString("\n")
+		}
+		current.WriteString(line)
+
+		// Force flush if too large
+		if current.Len() >= maxChunkLen {
+			flush(lineNum)
+		}
+	}
+
+	if current.Len() > 0 {
+		flush(len(lines))
+	}
+
+	return chunks
+}
 
 // EmbeddingProvider generates vector embeddings for text.
 type EmbeddingProvider interface {
@@ -107,6 +177,87 @@ func (p *OpenAIEmbeddingProvider) Embed(ctx context.Context, texts []string) ([]
 	}
 
 	return embeddings, nil
+}
+
+// CachedEmbeddingProvider wraps any EmbeddingProvider with an in-memory LRU cache.
+// Keyed by SHA256 content hash. Evicts the oldest entry when the cache is full.
+// This reduces redundant API calls when the same text is embedded multiple times
+// (e.g., re-indexing unchanged chunks or repeating the same search query).
+const l1CacheMax = 50
+
+type CachedEmbeddingProvider struct {
+	inner  EmbeddingProvider
+	mu     sync.Mutex
+	cache  map[string][]float32
+	keys   []string // insertion-order for LRU eviction
+}
+
+// WithL1Cache wraps provider with an in-memory LRU embedding cache.
+func WithL1Cache(provider EmbeddingProvider) *CachedEmbeddingProvider {
+	return &CachedEmbeddingProvider{
+		inner: provider,
+		cache: make(map[string][]float32),
+	}
+}
+
+func (c *CachedEmbeddingProvider) Name() string  { return c.inner.Name() }
+func (c *CachedEmbeddingProvider) Model() string { return c.inner.Model() }
+
+func (c *CachedEmbeddingProvider) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	results := make([][]float32, len(texts))
+
+	// Separate cached from uncached
+	type miss struct {
+		idx  int
+		text string
+	}
+	var misses []miss
+	for i, t := range texts {
+		h := ContentHash(t)
+		c.mu.Lock()
+		if emb, ok := c.cache[h]; ok {
+			results[i] = emb
+			c.mu.Unlock()
+		} else {
+			c.mu.Unlock()
+			misses = append(misses, miss{i, t})
+		}
+	}
+
+	if len(misses) == 0 {
+		return results, nil
+	}
+
+	// Batch embed uncached texts
+	batchTexts := make([]string, len(misses))
+	for i, m := range misses {
+		batchTexts[i] = m.text
+	}
+	embeddings, err := c.inner.Embed(ctx, batchTexts)
+	if err != nil {
+		return nil, err
+	}
+	for i, m := range misses {
+		if i < len(embeddings) {
+			results[m.idx] = embeddings[i]
+			c.set(ContentHash(m.text), embeddings[i])
+		}
+	}
+	return results, nil
+}
+
+func (c *CachedEmbeddingProvider) set(hash string, emb []float32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.cache[hash]; !exists {
+		if len(c.keys) >= l1CacheMax {
+			oldest := c.keys[0]
+			c.keys = c.keys[1:]
+			delete(c.cache, oldest)
+		}
+		c.keys = append(c.keys, hash)
+	}
+	c.cache[hash] = emb
 }
 
 // CosineSimilarity computes the cosine similarity between two vectors.

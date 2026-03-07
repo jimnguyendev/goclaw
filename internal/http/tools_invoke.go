@@ -14,7 +14,7 @@ import (
 type ToolsInvokeHandler struct {
 	registry   *tools.Registry
 	token      string
-	agentStore store.AgentStore // nil in standalone mode
+	agentStore store.AgentStore // nil if not configured
 }
 
 // NewToolsInvokeHandler creates a handler for the tools invoke endpoint.
@@ -33,6 +33,9 @@ type toolsInvokeRequest struct {
 	SessionKey string                 `json:"sessionKey,omitempty"`
 	AgentID    string                 `json:"agentId,omitempty"`
 	DryRun     bool                   `json:"dryRun,omitempty"`
+	Channel    string                 `json:"channel,omitempty"`  // tool context: channel name
+	ChatID     string                 `json:"chatId,omitempty"`   // tool context: chat ID
+	PeerKind   string                 `json:"peerKind,omitempty"` // tool context: "direct" or "group"
 }
 
 func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +98,17 @@ func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			ctx = store.WithAgentID(ctx, ag.ID)
 		}
+	}
+
+	// Inject tool context keys (channel, chatID, peerKind) for message routing.
+	if req.Channel != "" {
+		ctx = tools.WithToolChannel(ctx, req.Channel)
+	}
+	if req.ChatID != "" {
+		ctx = tools.WithToolChatID(ctx, req.ChatID)
+	}
+	if req.PeerKind != "" {
+		ctx = tools.WithToolPeerKind(ctx, req.PeerKind)
 	}
 
 	// Execute the tool

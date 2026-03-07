@@ -54,11 +54,19 @@ export function ProviderModelSelect({
   const { providers } = useProviders();
   const enabledProviders = providers.filter((p) => p.enabled);
 
-  const selectedProviderId = useMemo(
-    () => enabledProviders.find((p) => p.name === provider)?.id,
+  // Auto-select first enabled provider when none is set
+  useEffect(() => {
+    if (!provider && enabledProviders.length > 0) {
+      onProviderChange(enabledProviders[0]!.name);
+    }
+  }, [provider, enabledProviders, onProviderChange]);
+
+  const selectedProvider = useMemo(
+    () => enabledProviders.find((p) => p.name === provider),
     [enabledProviders, provider],
   );
-  const { models, loading: modelsLoading } = useProviderModels(selectedProviderId);
+  const selectedProviderId = selectedProvider?.id;
+  const { models, loading: modelsLoading } = useProviderModels(selectedProviderId, selectedProvider?.provider_type);
   const { verify, verifying, result: verifyResult, reset: resetVerify } = useProviderVerify();
 
   const hasSavedValues = savedProvider !== undefined && savedModel !== undefined;

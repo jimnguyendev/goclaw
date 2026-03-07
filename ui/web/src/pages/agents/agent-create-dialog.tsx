@@ -41,15 +41,17 @@ export function AgentCreateDialog({ open, onOpenChange, onCreate }: AgentCreateD
   const [agentType, setAgentType] = useState<"open" | "predefined">("open");
   const [description, setDescription] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   const enabledProviders = providers.filter((p) => p.enabled);
 
   // Look up provider ID from selected provider name for model fetching
-  const selectedProviderId = useMemo(
-    () => enabledProviders.find((p) => p.name === provider)?.id,
+  const selectedProvider = useMemo(
+    () => enabledProviders.find((p) => p.name === provider),
     [enabledProviders, provider],
   );
-  const { models, loading: modelsLoading } = useProviderModels(selectedProviderId);
+  const selectedProviderId = selectedProvider?.id;
+  const { models, loading: modelsLoading } = useProviderModels(selectedProviderId, selectedProvider?.provider_type);
   const { verify, verifying, result: verifyResult, reset: resetVerify } = useProviderVerify();
 
   // Reset verification when provider or model changes
@@ -71,6 +73,7 @@ export function AgentCreateDialog({ open, onOpenChange, onCreate }: AgentCreateD
   const handleCreate = async () => {
     if (!agentKey.trim()) return;
     setLoading(true);
+    setError("");
     try {
       await onCreate({
         agent_key: agentKey.trim(),
@@ -88,8 +91,9 @@ export function AgentCreateDialog({ open, onOpenChange, onCreate }: AgentCreateD
       setModel("");
       setAgentType("open");
       setDescription("");
-    } catch {
-      // error handled upstream
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
       setLoading(false);
     }
@@ -250,6 +254,9 @@ export function AgentCreateDialog({ open, onOpenChange, onCreate }: AgentCreateD
               </p>
             </div>
           )}
+          {error && (
+            <p className="text-sm text-destructive">{error}</p>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
@@ -258,11 +265,11 @@ export function AgentCreateDialog({ open, onOpenChange, onCreate }: AgentCreateD
           {loading ? (
             <Button disabled>Creating...</Button>
           ) : !verifyResult?.valid && selectedProviderId && model.trim() ? (
-            <Button onClick={handleVerifyAndCreate} disabled={verifying || !displayName.trim() || !agentKey.trim() || !isValidSlug(agentKey)}>
+            <Button onClick={handleVerifyAndCreate} disabled={verifying || !displayName.trim() || !agentKey.trim() || !isValidSlug(agentKey) || (agentType === "predefined" && !description.trim())}>
               {verifying ? "Checking..." : "Check & Create"}
             </Button>
           ) : (
-            <Button onClick={handleCreate} disabled={!displayName.trim() || !agentKey.trim() || !isValidSlug(agentKey) || !provider.trim() || !model.trim() || !verifyResult?.valid}>
+            <Button onClick={handleCreate} disabled={!displayName.trim() || !agentKey.trim() || !isValidSlug(agentKey) || !provider.trim() || !model.trim() || !verifyResult?.valid || (agentType === "predefined" && !description.trim())}>
               Create
             </Button>
           )}

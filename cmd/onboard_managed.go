@@ -36,7 +36,6 @@ func testPostgresConnection(dsn string) error {
 func seedManagedData(dsn string, cfg *config.Config) error {
 	storeCfg := store.StoreConfig{
 		PostgresDSN:   dsn,
-		Mode:          "managed",
 		EncryptionKey: os.Getenv("GOCLAW_ENCRYPTION_KEY"),
 	}
 	stores, err := pg.NewPGStores(storeCfg)
@@ -399,7 +398,7 @@ func resolveProviderAPIBase(providerName string) string {
 	case "openrouter":
 		return "https://openrouter.ai/api/v1"
 	case "anthropic":
-		return "https://api.anthropic.com"
+		return "https://api.anthropic.com/v1"
 	case "openai":
 		return "https://api.openai.com/v1"
 	case "groq":

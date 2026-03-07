@@ -42,13 +42,18 @@ func (s *PGProviderStore) CreateProvider(ctx context.Context, p *store.LLMProvid
 		apiKey = encrypted
 	}
 
+	settings := p.Settings
+	if len(settings) == 0 {
+		settings = []byte("{}")
+	}
+
 	now := time.Now()
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO llm_providers (id, name, display_name, provider_type, api_base, api_key, enabled, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		p.ID, p.Name, p.DisplayName, p.ProviderType, p.APIBase, apiKey, p.Enabled, now, now,
+		`INSERT INTO llm_providers (id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		p.ID, p.Name, p.DisplayName, p.ProviderType, p.APIBase, apiKey, p.Enabled, settings, now, now,
 	)
 	return err
 }
@@ -57,9 +62,9 @@ func (s *PGProviderStore) GetProvider(ctx context.Context, id uuid.UUID) (*store
 	var p store.LLMProviderData
 	var apiKey string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, created_at, updated_at
+		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at
 		 FROM llm_providers WHERE id = $1`, id,
-	).Scan(&p.ID, &p.Name, &p.DisplayName, &p.ProviderType, &p.APIBase, &apiKey, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.Name, &p.DisplayName, &p.ProviderType, &p.APIBase, &apiKey, &p.Enabled, &p.Settings, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("provider not found: %s", id)
 	}
@@ -67,9 +72,23 @@ func (s *PGProviderStore) GetProvider(ctx context.Context, id uuid.UUID) (*store
 	return &p, nil
 }
 
+func (s *PGProviderStore) GetProviderByName(ctx context.Context, name string) (*store.LLMProviderData, error) {
+	var p store.LLMProviderData
+	var apiKey string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at
+		 FROM llm_providers WHERE name = $1`, name,
+	).Scan(&p.ID, &p.Name, &p.DisplayName, &p.ProviderType, &p.APIBase, &apiKey, &p.Enabled, &p.Settings, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("provider not found: %s", name)
+	}
+	p.APIKey = s.decryptKey(apiKey, p.Name)
+	return &p, nil
+}
+
 func (s *PGProviderStore) ListProviders(ctx context.Context) ([]store.LLMProviderData, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, created_at, updated_at
+		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at
 		 FROM llm_providers ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -80,7 +99,7 @@ func (s *PGProviderStore) ListProviders(ctx context.Context) ([]store.LLMProvide
 	for rows.Next() {
 		var p store.LLMProviderData
 		var apiKey string
-		if err := rows.Scan(&p.ID, &p.Name, &p.DisplayName, &p.ProviderType, &p.APIBase, &apiKey, &p.Enabled, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.DisplayName, &p.ProviderType, &p.APIBase, &apiKey, &p.Enabled, &p.Settings, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
 		p.APIKey = s.decryptKey(apiKey, p.Name)

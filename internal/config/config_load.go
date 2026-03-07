@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -142,7 +143,12 @@ func (c *Config) applyEnvOverrides() {
 		c.Channels.WhatsApp.Enabled = true
 	}
 
-	// Allow overriding default provider/model
+	// Claude CLI provider
+	envStr("GOCLAW_CLAUDE_CLI_PATH", &c.Providers.ClaudeCLI.CLIPath)
+	envStr("GOCLAW_CLAUDE_CLI_MODEL", &c.Providers.ClaudeCLI.Model)
+	envStr("GOCLAW_CLAUDE_CLI_WORK_DIR", &c.Providers.ClaudeCLI.BaseWorkDir)
+
+	// Default provider/model: env overrides config.
 	envStr("GOCLAW_PROVIDER", &c.Agents.Defaults.Provider)
 	envStr("GOCLAW_MODEL", &c.Agents.Defaults.Model)
 
@@ -160,7 +166,11 @@ func (c *Config) applyEnvOverrides() {
 
 	// Database
 	envStr("GOCLAW_POSTGRES_DSN", &c.Database.PostgresDSN)
-	envStr("GOCLAW_MODE", &c.Database.Mode)
+
+	// Deprecation warning for GOCLAW_MODE (removed — PostgreSQL is always active)
+	if v := os.Getenv("GOCLAW_MODE"); v != "" {
+		slog.Warn("GOCLAW_MODE is deprecated; managed mode is now the only mode", "value", v)
+	}
 
 	// Telemetry
 	envStr("GOCLAW_TELEMETRY_ENDPOINT", &c.Telemetry.Endpoint)
@@ -240,7 +250,7 @@ func (c *Config) applyEnvOverrides() {
 // src/config/defaults.ts.
 //
 // Go port does not have OAuth vs API-key distinction — we always treat it as
-// API-key mode (heartbeat 30m).
+// API-key mode.
 func (c *Config) applyContextPruningDefaults() {
 	// Only apply when Anthropic is configured.
 	if c.Providers.Anthropic.APIKey == "" {

@@ -1,4 +1,4 @@
-import { Bot, Star, RotateCcw } from "lucide-react";
+import { Bot, Star, RotateCcw, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { AgentData } from "@/types/agent";
@@ -7,11 +7,12 @@ interface AgentCardProps {
   agent: AgentData;
   onClick: () => void;
   onResummon?: () => void;
+  onDelete?: () => void;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function AgentCard({ agent, onClick, onResummon }: AgentCardProps) {
+export function AgentCard({ agent, onClick, onResummon, onDelete }: AgentCardProps) {
   const displayName = agent.display_name
     || (UUID_RE.test(agent.agent_key) ? "Unnamed Agent" : agent.agent_key);
 
@@ -89,6 +90,20 @@ export function AgentCard({ agent, onClick, onResummon }: AgentCardProps) {
           >
             <RotateCcw className="h-3 w-3" />
             Resummon
+          </Button>
+        )}
+        {onDelete && (
+          <Button
+            variant="ghost"
+            size="xs"
+            className={`text-muted-foreground hover:text-destructive ${agent.status === "summon_failed" && onResummon ? "" : "ml-auto"}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
           </Button>
         )}
       </div>

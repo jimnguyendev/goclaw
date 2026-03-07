@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -14,7 +15,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
-// AgentsHandler handles agent CRUD and sharing endpoints (managed mode only).
+// AgentsHandler handles agent CRUD and sharing endpoints.
 type AgentsHandler struct {
 	agents   store.AgentStore
 	token    string
@@ -117,6 +118,12 @@ func (h *AgentsHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for duplicate agent_key before creating
+	if existing, _ := h.agents.GetByKey(r.Context(), req.AgentKey); existing != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "An agent with key \"" + req.AgentKey + "\" already exists"})
+		return
+	}
+
 	req.OwnerID = userID
 	if req.AgentType == "" {
 		req.AgentType = store.AgentTypeOpen
@@ -128,11 +135,7 @@ func (h *AgentsHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		req.MaxToolIterations = 20
 	}
 	if req.Workspace == "" {
-		if req.IsDefault {
-			req.Workspace = "~/.goclaw/workspace"
-		} else {
-			req.Workspace = fmt.Sprintf("~/.goclaw/%s-workspace", req.AgentKey)
-		}
+		req.Workspace = fmt.Sprintf("~/.goclaw/%s-workspace", req.AgentKey)
 	}
 	req.RestrictToWorkspace = true
 
@@ -153,7 +156,11 @@ func (h *AgentsHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.agents.Create(r.Context(), &req); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "23505") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "An agent with this key already exists"})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
 		return
 	}
 

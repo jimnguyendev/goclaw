@@ -70,7 +70,7 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			agentID = resolveAgentRoute(cfg, msg.Channel, msg.ChatID, msg.PeerKind)
 		}
 
-		// Check handoff routing override (managed mode only)
+		// Check handoff routing override
 		if teamStore != nil && msg.AgentID == "" {
 			if route, _ := teamStore.GetHandoffRoute(ctx, msg.Channel, msg.ChatID); route != nil {
 				agentID = route.ToAgentKey
@@ -126,7 +126,7 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			userID = fmt.Sprintf("group:%s:%s", msg.Channel, groupID)
 		}
 
-		// --- Quota check (managed mode only) ---
+		// --- Quota check ---
 		if quotaChecker != nil {
 			qResult := quotaChecker.Check(ctx, userID, msg.Channel, agentLoop.ProviderName())
 			if !qResult.Allowed {
@@ -170,6 +170,20 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 
 		runID := fmt.Sprintf("inbound-%s-%s-%s", msg.Channel, msg.ChatID, uuid.NewString()[:8])
 
+		// Build outbound metadata for reply-to + thread routing BEFORE RegisterRun
+		// so block.reply handler can use it for routing intermediate messages.
+		outMeta := make(map[string]string)
+		if isGroup {
+			if mid := msg.Metadata["message_id"]; mid != "" {
+				outMeta["reply_to_message_id"] = mid
+			}
+		}
+		for _, k := range []string{"message_thread_id", "local_key", "placeholder_key", "group_id"} {
+			if v := msg.Metadata[k]; v != "" {
+				outMeta[k] = v
+			}
+		}
+
 		// Register run with channel manager for streaming/reaction event forwarding.
 		// Use localKey (composite key with topic suffix) so streaming/reaction events
 		// route to the correct per-topic state in the channel.
@@ -178,8 +192,9 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 		if lk := msg.Metadata["local_key"]; lk != "" {
 			chatIDForRun = lk
 		}
+		blockReply := channelMgr != nil && channelMgr.ResolveBlockReply(msg.Channel, cfg.Gateway.BlockReply)
 		if channelMgr != nil {
-			channelMgr.RegisterRun(runID, msg.Channel, chatIDForRun, messageID)
+			channelMgr.RegisterRun(runID, msg.Channel, chatIDForRun, messageID, outMeta, enableStream, blockReply)
 		}
 
 		// Group-aware system prompt: help the LLM adapt tone and behavior for group chats.
@@ -237,23 +252,8 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			MaxConcurrent: maxConcurrent,
 		})
 
-		// Build outbound metadata for reply-to + thread routing.
-		// Groups: reply to user's message so context is clear in busy chats.
-		// DMs: no reply needed — response edits the placeholder or sends inline.
-		outMeta := make(map[string]string)
-		if isGroup {
-			if mid := msg.Metadata["message_id"]; mid != "" {
-				outMeta["reply_to_message_id"] = mid
-			}
-		}
-		for _, k := range []string{"message_thread_id", "local_key", "placeholder_key", "group_id"} {
-			if v := msg.Metadata[k]; v != "" {
-				outMeta[k] = v
-			}
-		}
-
 		// Handle result asynchronously to not block the flush callback.
-		go func(channel, chatID, session, rID string, meta map[string]string) {
+		go func(channel, chatID, session, rID string, meta map[string]string, blockReplyEnabled bool) {
 			outcome := <-outCh
 
 			// Clean up run tracking (in case HandleAgentEvent didn't fire for terminal events)
@@ -301,6 +301,21 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 				return
 			}
 
+			// Dedup: if block replies were delivered and the final content matches the last
+			// block reply, suppress the final message to avoid duplicate delivery.
+			// Only applies when blockReply is enabled (otherwise nothing was delivered).
+			if blockReplyEnabled && outcome.Result.BlockReplies > 0 && outcome.Result.Content == outcome.Result.LastBlockReply && len(outcome.Result.Media) == 0 {
+				slog.Debug("inbound: dedup final message (matches last block reply)",
+					"channel", channel, "run_id", rID)
+				msgBus.PublishOutbound(bus.OutboundMessage{
+					Channel:  channel,
+					ChatID:   chatID,
+					Content:  "",
+					Metadata: meta,
+				})
+				return
+			}
+
 			// Publish response back to the channel
 			outMsg := bus.OutboundMessage{
 				Channel:  channel,
@@ -324,7 +339,7 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			}
 
 			msgBus.PublishOutbound(outMsg)
-		}(msg.Channel, msg.ChatID, sessionKey, runID, outMeta)
+		}(msg.Channel, msg.ChatID, sessionKey, runID, outMeta, blockReply)
 	}
 
 	// Inbound debounce: merge rapid messages from the same sender before processing.

@@ -16,9 +16,10 @@ type PairingApproveCallback func(ctx context.Context, channel, chatID string)
 
 // PairingMethods handles device.pair.request, device.pair.approve, device.pair.list, device.pair.revoke.
 type PairingMethods struct {
-	service   store.PairingStore
-	msgBus    *bus.MessageBus
-	onApprove PairingApproveCallback
+	service     store.PairingStore
+	msgBus      *bus.MessageBus
+	onApprove   PairingApproveCallback
+	broadcaster func(protocol.EventFrame)
 }
 
 func NewPairingMethods(service store.PairingStore, msgBus *bus.MessageBus) *PairingMethods {
@@ -28,6 +29,11 @@ func NewPairingMethods(service store.PairingStore, msgBus *bus.MessageBus) *Pair
 // SetOnApprove sets a callback that fires after a pairing is approved.
 func (m *PairingMethods) SetOnApprove(cb PairingApproveCallback) {
 	m.onApprove = cb
+}
+
+// SetBroadcaster sets a function to broadcast events to all WS clients.
+func (m *PairingMethods) SetBroadcaster(fn func(protocol.EventFrame)) {
+	m.broadcaster = fn
 }
 
 func (m *PairingMethods) Register(router *gateway.MethodRouter) {
@@ -99,6 +105,10 @@ func (m *PairingMethods) handleApprove(ctx context.Context, client *gateway.Clie
 		go m.onApprove(context.Background(), paired.Channel, paired.ChatID)
 	}
 
+	if m.broadcaster != nil {
+		m.broadcaster(*protocol.NewEvent(protocol.EventDevicePairRes, map[string]any{"action": "approved"}))
+	}
+
 	client.SendResponse(protocol.NewOKResponse(req.ID, map[string]interface{}{
 		"paired": paired,
 	}))
@@ -120,6 +130,10 @@ func (m *PairingMethods) handleDeny(_ context.Context, client *gateway.Client, r
 	if err := m.service.DenyPairing(params.Code); err != nil {
 		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrNotFound, err.Error()))
 		return
+	}
+
+	if m.broadcaster != nil {
+		m.broadcaster(*protocol.NewEvent(protocol.EventDevicePairRes, map[string]any{"action": "denied"}))
 	}
 
 	client.SendResponse(protocol.NewOKResponse(req.ID, map[string]interface{}{
@@ -154,6 +168,10 @@ func (m *PairingMethods) handleRevoke(_ context.Context, client *gateway.Client,
 	if err := m.service.RevokePairing(params.SenderID, params.Channel); err != nil {
 		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrNotFound, err.Error()))
 		return
+	}
+
+	if m.broadcaster != nil {
+		m.broadcaster(*protocol.NewEvent(protocol.EventDevicePairRes, map[string]any{"action": "revoked"}))
 	}
 
 	// Broadcast revocation so the server can force-disconnect the active session.

@@ -43,6 +43,7 @@ func init() {
 	rootCmd.AddCommand(sessionsCmd())
 	rootCmd.AddCommand(migrateCmd())
 	rootCmd.AddCommand(upgradeCmd())
+	rootCmd.AddCommand(authCmd())
 }
 
 func versionCmd() *cobra.Command {

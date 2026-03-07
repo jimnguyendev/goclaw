@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Users } from "lucide-react";
+import { ArrowLeft, Users, Trash2 } from "lucide-react";
 import { DeferredSpinner } from "@/components/shared/loading-skeleton";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { useTeams } from "./hooks/use-teams";
 import { TeamMembersTab } from "./team-members-tab";
 import { TeamTasksTab } from "./team-tasks-tab";
@@ -17,11 +18,12 @@ interface TeamDetailPageProps {
 }
 
 export function TeamDetailPage({ teamId, onBack }: TeamDetailPageProps) {
-  const { getTeam, getTeamTasks, addMember, removeMember } = useTeams();
+  const { getTeam, getTeamTasks, addMember, removeMember, deleteTeam } = useTeams();
   const [team, setTeam] = useState<TeamData | null>(null);
   const [members, setMembers] = useState<TeamMemberData[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("members");
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -103,6 +105,14 @@ export function TeamDetailPage({ teamId, onBack }: TeamDetailPageProps) {
             <p className="mt-1 text-sm text-muted-foreground/70">{team.description}</p>
           )}
         </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="shrink-0 text-muted-foreground hover:text-destructive"
+          onClick={() => setDeleteOpen(true)}
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
       </div>
 
       {/* Tabs */}
@@ -137,6 +147,20 @@ export function TeamDetailPage({ teamId, onBack }: TeamDetailPageProps) {
           </TabsContent>
         </Tabs>
       </div>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title="Delete Team"
+        description={`Are you sure you want to delete "${team.name}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={async () => {
+          await deleteTeam(teamId);
+          setDeleteOpen(false);
+          onBack();
+        }}
+      />
     </div>
   );
 }

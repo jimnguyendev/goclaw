@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Save, ChevronDown, ChevronRight } from "lucide-react";
+import { Save, ChevronDown, ChevronRight, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,11 +23,13 @@ interface Props {
 export function AgentsDefaultsSection({ data, onSave, saving }: Props) {
   const [draft, setDraft] = useState<AgentsData>(data ?? DEFAULT);
   const [dirty, setDirty] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [openSubs, setOpenSubs] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setDraft(data ?? DEFAULT);
     setDirty(false);
+    setSaveError(null);
   }, [data]);
 
   const defaults = draft.defaults ?? {};
@@ -63,7 +65,6 @@ export function AgentsDefaultsSection({ data, onSave, saving }: Props) {
   const memory = defaults.memory ?? {};
   const compaction = defaults.compaction ?? {};
   const pruning = defaults.contextPruning ?? {};
-  const heartbeat = defaults.heartbeat ?? {};
   const sandbox = defaults.sandbox ?? {};
 
   return (
@@ -222,20 +223,6 @@ export function AgentsDefaultsSection({ data, onSave, saving }: Props) {
         </SubSection>
 
         <SubSection
-          title="Heartbeat"
-          desc="Periodic agent wake-up"
-          open={openSubs.has("heartbeat")}
-          onToggle={() => toggleSub("heartbeat")}
-        >
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Every" tip="How often the agent wakes up. Go duration format (e.g. 30m, 1h). 0m = disabled." value={heartbeat.every} onChange={(v) => updateNested("heartbeat", { every: v })} placeholder="30m (0m = disabled)" />
-            <Field label="Model Override" tip="Use a different model for heartbeat checks. Leave empty for default." value={heartbeat.model} onChange={(v) => updateNested("heartbeat", { model: v })} placeholder="Use default" />
-            <Field label="Session" tip="Session key to use for heartbeat messages." value={heartbeat.session} onChange={(v) => updateNested("heartbeat", { session: v })} placeholder="main" />
-            <Field label="Target" tip="Target for heartbeat. 'last' resumes the last active session." value={heartbeat.target} onChange={(v) => updateNested("heartbeat", { target: v })} placeholder="last" />
-          </div>
-        </SubSection>
-
-        <SubSection
           title="Sandbox"
           desc="Docker-based code sandbox"
           open={openSubs.has("sandbox")}
@@ -264,9 +251,18 @@ export function AgentsDefaultsSection({ data, onSave, saving }: Props) {
           </div>
         </SubSection>
 
+        {saveError && (
+          <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            {saveError}
+          </div>
+        )}
         {dirty && (
           <div className="flex justify-end pt-2">
-            <Button size="sm" onClick={() => onSave(draft)} disabled={saving} className="gap-1.5">
+            <Button size="sm" onClick={async () => {
+              setSaveError(null);
+              try { await onSave(draft); } catch (err) { setSaveError(err instanceof Error ? err.message : "Failed to save"); }
+            }} disabled={saving} className="gap-1.5">
               <Save className="h-3.5 w-3.5" /> {saving ? "Saving..." : "Save"}
             </Button>
           </div>
@@ -295,7 +291,7 @@ function SubSection({
     <div className="rounded-md border">
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm hover:bg-muted/50"
+        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left text-sm hover:bg-muted/50"
         onClick={onToggle}
       >
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}

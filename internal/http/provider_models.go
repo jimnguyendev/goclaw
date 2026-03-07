@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 // ModelInfo is a normalized model entry returned by the list-models endpoint.
@@ -36,6 +37,12 @@ func (h *ProvidersHandler) handleListProviderModels(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// Claude CLI doesn't need an API key — return hardcoded models
+	if p.ProviderType == store.ProviderClaudeCLI {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"models": claudeCLIModels()})
+		return
+	}
+
 	if p.APIKey == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider has no API key configured"})
 		return
@@ -53,6 +60,8 @@ func (h *ProvidersHandler) handleListProviderModels(w http.ResponseWriter, r *ht
 		models, err = fetchGeminiModels(ctx, p.APIKey)
 	case "bailian":
 		models = bailianModels()
+	case "minimax_native":
+		models = minimaxModels()
 	default:
 		// All other types use OpenAI-compatible /models endpoint
 		apiBase := strings.TrimRight(p.APIBase, "/")
@@ -160,6 +169,25 @@ func bailianModels() []ModelInfo {
 		{ID: "qwen3-coder-next", Name: "Qwen 3 Coder Next"},
 		{ID: "qwen3-coder-plus", Name: "Qwen 3 Coder Plus"},
 		{ID: "glm-4.7", Name: "GLM 4.7"},
+	}
+}
+
+// minimaxModels returns a hardcoded list of MiniMax models.
+// MiniMax does not expose a /v1/models endpoint.
+func minimaxModels() []ModelInfo {
+	return []ModelInfo{
+		{ID: "MiniMax-Text-01", Name: "MiniMax Text 01"},
+		{ID: "MiniMax-M1", Name: "MiniMax M1"},
+		{ID: "MiniMax-M2.5", Name: "MiniMax M2.5"},
+	}
+}
+
+// claudeCLIModels returns the model aliases accepted by the Claude CLI.
+func claudeCLIModels() []ModelInfo {
+	return []ModelInfo{
+		{ID: "sonnet", Name: "Sonnet"},
+		{ID: "opus", Name: "Opus"},
+		{ID: "haiku", Name: "Haiku"},
 	}
 }
 

@@ -24,11 +24,11 @@ export function SubagentsSection({ enabled, value, onToggle, onChange }: Subagen
   const { providers } = useProviders();
   const enabledProviders = providers.filter((p) => p.enabled);
   // Use the first enabled provider for model list suggestions
-  const defaultProviderId = useMemo(
-    () => enabledProviders[0]?.id,
+  const defaultProvider = useMemo(
+    () => enabledProviders[0],
     [enabledProviders],
   );
-  const { models, loading: modelsLoading } = useProviderModels(defaultProviderId);
+  const { models, loading: modelsLoading } = useProviderModels(defaultProvider?.id, defaultProvider?.provider_type);
 
   return (
     <ConfigSection

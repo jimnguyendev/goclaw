@@ -97,6 +97,7 @@ export function TeamsPage() {
                   key={team.id}
                   team={team}
                   onClick={() => navigate(`/teams/${team.id}`)}
+                  onDelete={() => setDeleteTarget({ id: team.id, name: team.name })}
                 />
               ))}
             </div>

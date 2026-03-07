@@ -15,6 +15,11 @@ const (
 	OptThinkingBudget = "thinking_budget"
 )
 
+// TokenSource provides an OAuth access token (with auto-refresh).
+type TokenSource interface {
+	Token() (string, error)
+}
+
 // Provider is the interface all LLM providers must implement.
 type Provider interface {
 	// Chat sends messages to the LLM and returns a response.
@@ -54,6 +59,10 @@ type ChatResponse struct {
 	FinishReason string     `json:"finish_reason"` // "stop", "tool_calls", "length"
 	Usage        *Usage     `json:"usage,omitempty"`
 
+	// Phase is Codex-specific (gpt-5.3-codex): "commentary" or "final_answer".
+	// Agent loop must persist this on assistant messages for Codex performance.
+	Phase string `json:"phase,omitempty"`
+
 	// RawAssistantContent preserves the raw content blocks array from the provider response.
 	// Used by Anthropic to pass thinking blocks back in tool use loops (required by API).
 	RawAssistantContent json.RawMessage `json:"-"`
@@ -80,6 +89,12 @@ type Message struct {
 	Images     []ImageContent `json:"images,omitempty"`      // vision: base64 images
 	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"` // for role="tool" responses
+
+	// Phase is a Codex-specific field (gpt-5.3-codex) indicating message purpose.
+	// Values: "commentary" (intermediate), "final_answer" (closeout), or "" (unset).
+	// Must be persisted and passed back in subsequent requests for Codex performance.
+	// Other providers ignore this field.
+	Phase string `json:"phase,omitempty"`
 
 	// RawAssistantContent carries raw provider content blocks through tool loop iterations.
 	// Anthropic requires thinking blocks to be passed back exactly as received.

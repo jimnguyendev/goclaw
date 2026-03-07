@@ -48,7 +48,7 @@ func (l *Loop) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		Payload: map[string]interface{}{"message": req.Message},
 	})
 
-	// Create trace (managed mode only)
+	// Create trace
 	var traceID uuid.UUID
 	isChildTrace := req.ParentTraceID != uuid.Nil && l.traceCollector != nil
 
@@ -163,7 +163,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 		l.emit(event)
 	}
 
-	// Inject agent UUID into context for tool routing (managed mode)
+	// Inject agent UUID into context for tool routing
 	if l.agentUUID != uuid.Nil {
 		ctx = store.WithAgentID(ctx, l.agentUUID)
 	}
@@ -171,7 +171,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 	if req.UserID != "" {
 		ctx = store.WithUserID(ctx, req.UserID)
 	}
-	// Inject agent type into context for interceptor routing (managed mode)
+	// Inject agent type into context for interceptor routing
 	if l.agentType != "" {
 		ctx = store.WithAgentType(ctx, l.agentType)
 	}
@@ -200,7 +200,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 		cachedWs, loaded := l.userWorkspaces.Load(req.UserID)
 		if !loaded {
 			// First request for this user: get/create profile → returns stored workspace.
-			// Also seeds per-user context files on first chat (managed mode).
+			// Also seeds per-user context files on first chat.
 			ws := l.workspace
 			if l.ensureUserFiles != nil {
 				var err error
@@ -258,7 +258,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 		}
 	}
 
-	// Inject agent key into context for tool-level resolution (managed mode: multiple agents share tool registry)
+	// Inject agent key into context for tool-level resolution (multiple agents share tool registry)
 	ctx = tools.WithToolAgentKey(ctx, l.id)
 
 	// Security: truncate oversized user messages gracefully (feed truncation notice into LLM)
@@ -369,6 +369,8 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 	var asyncToolCalls []string   // track async spawn tool names for fallback
 	var mediaResults []MediaResult // media files from tool MEDIA: results
 	var deliverables []string      // actual content from tool outputs (for team task results)
+	var blockReplies int           // count of block.reply events emitted (for dedup in consumer)
+	var lastBlockReply string      // last block reply content
 
 	// Mid-loop compaction: summarize in-memory messages when context exceeds threshold.
 	// Uses same config as maybeSummarize (contextWindow * historyShare).
@@ -424,6 +426,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 			Options: map[string]interface{}{
 				providers.OptMaxTokens:   8192,
 				providers.OptTemperature: 0.7,
+				providers.OptSessionKey:  req.SessionKey,
 			},
 		}
 		if l.thinkingLevel != "" && l.thinkingLevel != "off" {
@@ -571,10 +574,27 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 			Content:             resp.Content,
 			Thinking:            resp.Thinking, // reasoning_content passback for thinking models (Kimi, DeepSeek)
 			ToolCalls:           resp.ToolCalls,
+			Phase:               resp.Phase, // preserve Codex phase metadata (gpt-5.3-codex)
 			RawAssistantContent: resp.RawAssistantContent, // preserve thinking blocks for Anthropic passback
 		}
 		messages = append(messages, assistantMsg)
 		pendingMsgs = append(pendingMsgs, assistantMsg)
+
+		// Emit block.reply for intermediate assistant content during tool iterations.
+		// Non-streaming channels (Zalo, Discord, WhatsApp) would otherwise lose this text.
+		if resp.Content != "" {
+			sanitized := SanitizeAssistantContent(resp.Content)
+			if sanitized != "" && !IsSilentReply(sanitized) {
+				blockReplies++
+				lastBlockReply = sanitized
+				l.emit(AgentEvent{
+					Type:    protocol.AgentEventBlockReply,
+					AgentID: l.id,
+					RunID:   req.RunID,
+					Payload: map[string]string{"content": sanitized},
+				})
+			}
+		}
 
 		// Track team_tasks create for orphan detection (argument-based, pre-execution).
 		// Spawn counting is done post-execution so failed spawns don't get counted.
@@ -904,12 +924,14 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 	}
 
 	return &RunResult{
-		Content:      finalContent,
-		RunID:        req.RunID,
-		Iterations:   iteration,
-		Usage:        &totalUsage,
-		Media:        mediaResults,
-		Deliverables: deliverables,
+		Content:        finalContent,
+		RunID:          req.RunID,
+		Iterations:     iteration,
+		Usage:          &totalUsage,
+		Media:          mediaResults,
+		Deliverables:   deliverables,
+		BlockReplies:   blockReplies,
+		LastBlockReply: lastBlockReply,
 	}, nil
 }
 

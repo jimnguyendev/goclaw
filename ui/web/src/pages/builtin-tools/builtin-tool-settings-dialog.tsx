@@ -66,11 +66,12 @@ function MediaSettingsForm({
   const [saving, setSaving] = useState(false);
 
   // Resolve provider name → id for model list and verify
-  const selectedProviderId = useMemo(
-    () => enabledProviders.find((p) => p.name === provider)?.id,
+  const selectedProvider = useMemo(
+    () => enabledProviders.find((p) => p.name === provider),
     [enabledProviders, provider],
   );
-  const { models, loading: modelsLoading } = useProviderModels(selectedProviderId);
+  const selectedProviderId = selectedProvider?.id;
+  const { models, loading: modelsLoading } = useProviderModels(selectedProviderId, selectedProvider?.provider_type);
   const { verify, verifying, result: verifyResult, reset: resetVerify } = useProviderVerify();
 
   useEffect(() => {

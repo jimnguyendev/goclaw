@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/google/uuid"
 )
@@ -21,6 +22,8 @@ const (
 	ProviderPerplexity      = "perplexity"
 	ProviderDashScope       = "dashscope"
 	ProviderBailian         = "bailian"
+	ProviderChatGPTOAuth    = "chatgpt_oauth"
+	ProviderClaudeCLI       = "claude_cli"
 )
 
 // ValidProviderTypes lists all accepted provider_type values.
@@ -38,23 +41,27 @@ var ValidProviderTypes = map[string]bool{
 	ProviderPerplexity:      true,
 	ProviderDashScope:       true,
 	ProviderBailian:         true,
+	ProviderChatGPTOAuth:    true,
+	ProviderClaudeCLI:       true,
 }
 
 // LLMProviderData represents an LLM provider configuration.
 type LLMProviderData struct {
 	BaseModel
-	Name         string `json:"name"`
-	DisplayName  string `json:"display_name,omitempty"`
-	ProviderType string `json:"provider_type"`
-	APIBase      string `json:"api_base,omitempty"`
-	APIKey       string `json:"api_key,omitempty"`
-	Enabled      bool   `json:"enabled"`
+	Name         string          `json:"name"`
+	DisplayName  string          `json:"display_name,omitempty"`
+	ProviderType string          `json:"provider_type"`
+	APIBase      string          `json:"api_base,omitempty"`
+	APIKey       string          `json:"api_key,omitempty"`
+	Enabled      bool            `json:"enabled"`
+	Settings     json.RawMessage `json:"settings,omitempty"`
 }
 
-// ProviderStore manages LLM providers (managed mode only).
+// ProviderStore manages LLM providers.
 type ProviderStore interface {
 	CreateProvider(ctx context.Context, p *LLMProviderData) error
 	GetProvider(ctx context.Context, id uuid.UUID) (*LLMProviderData, error)
+	GetProviderByName(ctx context.Context, name string) (*LLMProviderData, error)
 	ListProviders(ctx context.Context) ([]LLMProviderData, error)
 	UpdateProvider(ctx context.Context, id uuid.UUID, updates map[string]any) error
 	DeleteProvider(ctx context.Context, id uuid.UUID) error

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/nextlevelbuilder/goclaw/internal/channels/zalo/personal/protocol"
@@ -73,9 +74,14 @@ func (c *Channel) sendPairingReply(senderID, chatID string) {
 		senderID, code, code,
 	)
 
+	threadType := protocol.ThreadTypeUser
+	if strings.HasPrefix(senderID, "group:") {
+		threadType = protocol.ThreadTypeGroup
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := protocol.SendMessage(ctx, sess, chatID, protocol.ThreadTypeUser, replyText); err != nil {
+	if _, err := protocol.SendMessage(ctx, sess, chatID, threadType, replyText); err != nil {
 		slog.Warn("zalo_personal: failed to send pairing reply", "error", err)
 	} else {
 		c.pairingDebounce.Store(senderID, time.Now())
@@ -102,7 +108,7 @@ func (c *Channel) checkGroupPolicy(senderID, groupID string, mentions []*protoco
 		}
 
 	case "pairing":
-		if c.IsAllowed(groupID) {
+		if c.HasAllowList() && c.IsAllowed(groupID) {
 			// pass — allowlist bypass
 		} else if _, cached := c.approvedGroups.Load(groupID); cached {
 			// pass — already approved

@@ -1,13 +1,15 @@
-import { Users } from "lucide-react";
+import { Users, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import type { TeamData } from "@/types/team";
 
 interface TeamCardProps {
   team: TeamData;
   onClick: () => void;
+  onDelete?: () => void;
 }
 
-export function TeamCard({ team, onClick }: TeamCardProps) {
+export function TeamCard({ team, onClick, onDelete }: TeamCardProps) {
   return (
     <button
       type="button"
@@ -40,6 +42,20 @@ export function TeamCard({ team, onClick }: TeamCardProps) {
           <Badge variant="outline" className="text-[11px]">
             Lead: {team.lead_agent_key}
           </Badge>
+        )}
+        {onDelete && (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="ml-auto text-muted-foreground hover:text-destructive"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </Button>
         )}
       </div>
     </button>

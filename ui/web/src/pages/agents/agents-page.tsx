@@ -114,6 +114,7 @@ export function AgentsPage() {
                     }
                   }}
                   onResummon={() => handleResummon(agent)}
+                  onDelete={() => setDeleteTarget(agent.id)}
                 />
               ))}
             </div>

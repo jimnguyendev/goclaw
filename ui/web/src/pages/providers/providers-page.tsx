@@ -26,6 +26,7 @@ const typeBadge: Record<string, { label: string; variant: "default" | "secondary
   minimax_native: { label: "MiniMax", variant: "secondary" },
   cohere: { label: "Cohere", variant: "secondary" },
   perplexity: { label: "Perplexity", variant: "secondary" },
+  chatgpt_oauth: { label: "ChatGPT (OAuth)", variant: "default" },
 };
 
 export function ProvidersPage() {
@@ -142,7 +143,9 @@ export function ProvidersPage() {
                         {p.api_base || "-"}
                       </td>
                       <td className="px-4 py-3">
-                        {p.api_key === "***" ? (
+                        {p.provider_type === "chatgpt_oauth" ? (
+                          <Badge variant="outline" className="text-xs">OAuth Token</Badge>
+                        ) : p.api_key === "***" ? (
                           <Badge variant="outline" className="font-mono text-xs">***</Badge>
                         ) : (
                           <span className="text-xs text-muted-foreground">Not set</span>
@@ -154,23 +157,25 @@ export function ProvidersPage() {
                         </Badge>
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => { setEditProvider(p); setFormOpen(true); }}
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setDeleteTarget(p)}
-                            className="text-destructive hover:text-destructive"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
+                        {p.provider_type !== "chatgpt_oauth" && (
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => { setEditProvider(p); setFormOpen(true); }}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setDeleteTarget(p)}
+                              className="text-destructive hover:text-destructive"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -194,6 +199,7 @@ export function ProvidersPage() {
         onOpenChange={setFormOpen}
         provider={editProvider}
         onSubmit={editProvider ? handleEdit : handleCreate}
+        existingProviders={providers}
       />
 
       <ConfirmDialog
