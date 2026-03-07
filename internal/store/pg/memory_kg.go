@@ -54,6 +54,7 @@ func (s *PGMemoryStore) KGIndexEntities(
 			aid, uid, e.Name, nodeType,
 		).Scan(&nodeID)
 		if err != nil {
+			slog.Warn("memory.kg.upsert_node_failed", "error", err, "name", e.Name)
 			continue
 		}
 		nameToID[e.Name] = nodeID
@@ -63,12 +64,14 @@ func (s *PGMemoryStore) KGIndexEntities(
 			if alias == "" || alias == e.Name {
 				continue
 			}
-			s.db.ExecContext(ctx,
+			if _, err := s.db.ExecContext(ctx,
 				`INSERT INTO memory_kg_aliases (agent_id, alias, node_id)
 				 VALUES ($1, $2, $3)
 				 ON CONFLICT (agent_id, alias) DO NOTHING`,
 				aid, strings.ToLower(alias), nodeID,
-			)
+			); err != nil {
+				slog.Warn("memory.kg.upsert_alias_failed", "error", err, "alias", alias, "node", e.Name)
+			}
 		}
 	}
 
@@ -108,19 +111,23 @@ func (s *PGMemoryStore) KGIndexEntities(
 			aid, srcID, tgtID, r.Relation, weight, r.ValidFrom, r.ValidUntil,
 		)
 		if err != nil {
+			slog.Warn("memory.kg.upsert_edge_failed", "error", err,
+				"from", r.From, "to", r.To, "relation", r.Relation)
 			continue
 		}
 	}
 
 	// Refresh degree cache for all touched nodes.
-	s.db.ExecContext(ctx,
+	if _, err := s.db.ExecContext(ctx,
 		`UPDATE memory_kg_nodes n
 		 SET degree = (
 		     SELECT COUNT(*) FROM memory_kg_edges e
 		     WHERE e.agent_id = n.agent_id
 		       AND (e.source_id = n.id OR e.target_id = n.id)
 		 )
-		 WHERE n.agent_id = $1`, aid)
+		 WHERE n.agent_id = $1`, aid); err != nil {
+		slog.Warn("memory.kg.refresh_degrees_failed", "error", err, "agent_id", aid)
+	}
 
 	return nil
 }

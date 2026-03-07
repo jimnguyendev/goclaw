@@ -1,10 +1,13 @@
 package pg
 
 import (
+	"context"
+	"fmt"
 	"math"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -269,6 +272,117 @@ func TestKGBFS_MaxHopsRespected(t *testing.T) {
 
 	if _, ok := visited[d]; ok {
 		t.Error("d at hop 3 should not be visited with maxHops=2")
+	}
+}
+
+// ─── kgFindSeeds hub exclusion ────────────────────────────────────────────────
+// (tested at unit level via the exported BFS; DB-level tested in integration)
+
+// ─── trackAccess ──────────────────────────────────────────────────────────────
+
+func TestTrackAccess_EmptyChunks(t *testing.T) {
+	// Should not panic or hit DB when chunks slice is empty.
+	mem := &PGMemoryStore{} // nil db — would panic if accessed
+	mem.trackAccess(context.Background(), nil)
+	mem.trackAccess(context.Background(), []scoredChunk{})
+}
+
+func TestTrackAccess_AllEmptyIDs(t *testing.T) {
+	// Chunks with empty IDs should be skipped entirely — no DB call.
+	mem := &PGMemoryStore{} // nil db
+	mem.trackAccess(context.Background(), []scoredChunk{
+		{ID: "", Path: "a.md"},
+		{ID: "", Path: "b.md"},
+	})
+}
+
+func TestTrackAccess_DBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectExec("UPDATE memory_chunks").
+		WillReturnError(fmt.Errorf("connection refused"))
+
+	mem := NewPGMemoryStore(db, DefaultPGMemoryConfig())
+	// Should not panic — error is logged via slog.Warn.
+	mem.trackAccess(context.Background(), []scoredChunk{
+		{ID: uuid.New().String(), Path: "a.md"},
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// ─── GetSearchConfig ──────────────────────────────────────────────────────────
+
+func TestGetSearchConfig_InvalidUUID(t *testing.T) {
+	mem := &PGMemoryStore{} // nil db — should fail before DB call
+	cfg, err := mem.GetSearchConfig(context.Background(), "not-a-uuid")
+	if err == nil {
+		t.Error("expected error for invalid UUID")
+	}
+	// Should still return defaults even on error.
+	if cfg.RRFk != 60 {
+		t.Errorf("expected default RRFk=60, got %d", cfg.RRFk)
+	}
+}
+
+func TestGetSearchConfig_DBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	agentID := uuid.New().String()
+	mock.ExpectQuery("SELECT key, value FROM memory_search_config").
+		WillReturnError(fmt.Errorf("relation does not exist"))
+
+	mem := NewPGMemoryStore(db, DefaultPGMemoryConfig())
+	cfg, err := mem.GetSearchConfig(context.Background(), agentID)
+	if err == nil {
+		t.Error("expected error when DB query fails")
+	}
+	// Defaults should still be returned.
+	if cfg.RRFk != 60 || cfg.MMRLambda != 0.7 {
+		t.Errorf("expected defaults on error, got RRFk=%d MMRLambda=%.1f", cfg.RRFk, cfg.MMRLambda)
+	}
+}
+
+func TestGetSearchConfig_OverridesDefaults(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	agentID := uuid.New().String()
+	rows := sqlmock.NewRows([]string{"key", "value"}).
+		AddRow("rrf_k", "100").
+		AddRow("mmr_lambda", "0.5").
+		AddRow("unknown_key", "999") // should be ignored
+
+	mock.ExpectQuery("SELECT key, value FROM memory_search_config").
+		WillReturnRows(rows)
+
+	mem := NewPGMemoryStore(db, DefaultPGMemoryConfig())
+	cfg, err := mem.GetSearchConfig(context.Background(), agentID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RRFk != 100 {
+		t.Errorf("expected RRFk=100, got %d", cfg.RRFk)
+	}
+	if cfg.MMRLambda != 0.5 {
+		t.Errorf("expected MMRLambda=0.5, got %.2f", cfg.MMRLambda)
+	}
+	// Unchanged defaults
+	if cfg.DecayHalfLifeDays != 30.0 {
+		t.Errorf("expected DecayHalfLifeDays=30.0, got %.1f", cfg.DecayHalfLifeDays)
 	}
 }
 
