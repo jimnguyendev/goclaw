@@ -9,8 +9,30 @@ import (
 type DocumentInfo struct {
 	Path      string `json:"path"`
 	Hash      string `json:"hash"`
+	AgentID   string `json:"agent_id,omitempty"`
 	UserID    string `json:"user_id,omitempty"`
 	UpdatedAt int64  `json:"updated_at"`
+}
+
+// DocumentDetail provides full document info including chunk/embedding stats.
+type DocumentDetail struct {
+	Path          string `json:"path"`
+	Content       string `json:"content"`
+	Hash          string `json:"hash"`
+	UserID        string `json:"user_id,omitempty"`
+	ChunkCount    int    `json:"chunk_count"`
+	EmbeddedCount int    `json:"embedded_count"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
+}
+
+// ChunkInfo describes a single memory chunk.
+type ChunkInfo struct {
+	ID           string `json:"id"`
+	StartLine    int    `json:"start_line"`
+	EndLine      int    `json:"end_line"`
+	TextPreview  string `json:"text_preview"`
+	HasEmbedding bool   `json:"has_embedding"`
 }
 
 // MemorySearchResult is a single result from memory search.
@@ -106,6 +128,12 @@ type MemoryStore interface {
 	PutDocument(ctx context.Context, agentID, userID, path, content string) error
 	DeleteDocument(ctx context.Context, agentID, userID, path string) error
 	ListDocuments(ctx context.Context, agentID, userID string) ([]DocumentInfo, error)
+
+	// Admin queries
+	ListAllDocumentsGlobal(ctx context.Context) ([]DocumentInfo, error)
+	ListAllDocuments(ctx context.Context, agentID string) ([]DocumentInfo, error)
+	GetDocumentDetail(ctx context.Context, agentID, userID, path string) (*DocumentDetail, error)
+	ListChunks(ctx context.Context, agentID, userID, path string) ([]ChunkInfo, error)
 
 	// Search (tri-hybrid: FTS + vector + knowledge-graph → RRF → decay → MMR)
 	Search(ctx context.Context, query string, agentID, userID string, opts MemorySearchOptions) ([]MemorySearchResult, error)
